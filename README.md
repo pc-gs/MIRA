@@ -73,12 +73,12 @@ mira/
 
 | Shortcut | Action |
 |---|---|
-| `Cmd+Shift+X` | Toggle overlay on/off |
-| `Cmd+Shift+D` | Toggle draw mode |
-| `Cmd+Shift+C` | Clear canvas |
-| `Cmd+Shift+Z` | Undo |
-| `Cmd+Shift+Y` | Redo |
-| `Cmd+Shift+S` | Toggle spotlight |
+| `Ctrl+Shift+X` | Toggle overlay on/off |
+| `Ctrl+Shift+D` | Toggle draw mode |
+| `Ctrl+Shift+C` | Clear canvas |
+| `Ctrl+Shift+Z` | Undo |
+| `Ctrl+Shift+Y` | Redo |
+| `Ctrl+Shift+S` | Toggle spotlight |
 
 On macOS, grant Accessibility permissions in System Settings for global shortcuts.
 
