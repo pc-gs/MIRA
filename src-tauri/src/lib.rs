@@ -3,6 +3,13 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf, thread, time::Duration};
 
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSWindow, NSStatusWindowLevel};
+#[cfg(target_os = "macos")]
+use objc2::rc::Retained;
+#[cfg(target_os = "macos")]
+use objc2::runtime::AnyObject;
+
 const TOOLBAR_POSITION_FILE: &str = "toolbar-position.json";
 const TOOLBAR_LOGICAL_WIDTH_DEFAULT: f64 = 540.0;
 const TOOLBAR_LOGICAL_HEIGHT: f64 = 60.0;
@@ -30,8 +37,6 @@ struct OverlayWindowInfo {
 // ── Commands ──────────────────────────────────────────────────────────────────
 
 /// Toggle pass-through on the overlay window.
-/// pass_through=true  → clicks fall through to apps below (overlay not drawing)
-/// pass_through=false → overlay captures clicks (drawing mode)
 #[tauri::command]
 fn set_overlay_passthrough(app: AppHandle, pass_through: bool) -> Result<(), String> {
     for label in overlay_labels(&app) {
@@ -60,7 +65,6 @@ fn set_overlay_visible(app: AppHandle, visible: bool) -> Result<(), String> {
 }
 
 /// Bridge: toolbar frontend calls this to push events to the overlay window.
-/// Avoids needing core:event:allow-emit-to permission on the frontend.
 #[tauri::command]
 fn emit_to_overlay(app: AppHandle, event: String, payload: serde_json::Value) -> Result<(), String> {
     for label in overlay_labels(&app) {
@@ -238,9 +242,15 @@ fn setup_windows(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
 
     start_cursor_polling(app.handle().clone(), overlays);
 
-    // Re-raise toolbar so it sits above the overlay in z-order from the start
-    toolbar.set_always_on_top(false)?;
-    toolbar.set_always_on_top(true)?;
+    // Set toolbar to a higher window level on macOS to stay above overlays
+    #[cfg(target_os = "macos")]
+    {
+        let ns_window = toolbar.ns_window()? as *mut AnyObject;
+        let ns_window: Option<Retained<NSWindow>> = unsafe { Retained::retain(ns_window.cast()) };
+        if let Some(ns_window) = ns_window {
+            ns_window.setLevel(NSStatusWindowLevel);
+        }
+    }
 
     // Position toolbar top-center inside monitor work area by default.
     let toolbar_phys_w = (TOOLBAR_LOGICAL_WIDTH_DEFAULT * scale) as i32;
@@ -262,16 +272,33 @@ fn setup_windows(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
 }
 
 fn register_shortcuts(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let meta_shift = Some(Modifiers::META | Modifiers::SHIFT);
+    let ctrl_shift = Some(Modifiers::CONTROL | Modifiers::SHIFT);
     app.global_shortcut().register_multiple([
-        Shortcut::new(meta_shift, Code::KeyX), // toggle overlay
-        Shortcut::new(meta_shift, Code::KeyC), // clear
-        Shortcut::new(meta_shift, Code::KeyZ), // undo
-        Shortcut::new(meta_shift, Code::KeyY), // redo
-        Shortcut::new(meta_shift, Code::KeyS), // spotlight
-        Shortcut::new(meta_shift, Code::KeyD), // toggle draw mode
+        Shortcut::new(ctrl_shift, Code::KeyX), // toggle overlay
+        Shortcut::new(ctrl_shift, Code::KeyC), // clear
+        Shortcut::new(ctrl_shift, Code::KeyZ), // undo
+        Shortcut::new(ctrl_shift, Code::KeyY), // redo
+        Shortcut::new(ctrl_shift, Code::KeyS), // spotlight
+        Shortcut::new(ctrl_shift, Code::KeyD), // toggle draw mode
     ])?;
     Ok(())
+}
+
+fn raise_toolbar(app: &AppHandle) {
+    if let Some(toolbar) = app.get_webview_window("toolbar") {
+        #[cfg(target_os = "macos")]
+        {
+            if let Ok(ns_window) = toolbar.ns_window() {
+                let ns_window = ns_window as *mut AnyObject;
+                let ns_window: Option<Retained<NSWindow>> = unsafe { Retained::retain(ns_window.cast()) };
+                if let Some(ns_window) = ns_window {
+                    ns_window.setLevel(NSStatusWindowLevel);
+                }
+            }
+        }
+        let _ = toolbar.set_always_on_top(false);
+        let _ = toolbar.set_always_on_top(true);
+    }
 }
 
 fn handle_shortcut(app: &AppHandle, shortcut: &Shortcut) {
@@ -342,18 +369,67 @@ fn default_toolbar_position(work_area: &tauri::PhysicalRect<i32, u32>, scale: f6
     (x, y)
 }
 
-fn start_cursor_polling(app: AppHandle, overlays: Vec<OverlayWindowInfo>) {
+fn start_cursor_polling(app: AppHandle, mut overlays: Vec<OverlayWindowInfo>) {
+    let app_handle = app.clone();
     thread::spawn(move || {
+        let mut last_monitor_check = std::time::Instant::now();
         let mut last = vec![(f64::MIN, f64::MIN); overlays.len()];
+        let mut next_overlay_id = overlays.len() + 1;
+
         loop {
-            if let Ok(pos) = app.cursor_position() {
+            // Dynamically check for new monitors every 2 seconds
+            if last_monitor_check.elapsed() > Duration::from_secs(2) {
+                last_monitor_check = std::time::Instant::now();
+                if let Ok(monitors) = app_handle.available_monitors() {
+                    let current_keys: std::collections::HashSet<_> = overlays.iter()
+                        .map(|o| (o.monitor_x, o.monitor_y))
+                        .collect();
+                    
+                    let mut created_any = false;
+                    for monitor in monitors {
+                        let key = (monitor.position().x, monitor.position().y);
+                        if !current_keys.contains(&key) {
+                            let label = format!("overlay-dyn-{}", next_overlay_id);
+                            next_overlay_id += 1;
+                            
+                            if let Ok(overlay) = WebviewWindowBuilder::new(&app_handle, &label, WebviewUrl::App("index.html".into()))
+                                .title("Mira Overlay")
+                                .decorations(false)
+                                .transparent(true)
+                                .always_on_top(true)
+                                .accept_first_mouse(true)
+                                .resizable(false)
+                                .skip_taskbar(true)
+                                .shadow(false)
+                                .visible(false)
+                                .build() 
+                            {
+                                let _ = configure_overlay_for_monitor(&overlay, &monitor);
+                                overlays.push(OverlayWindowInfo {
+                                    label,
+                                    monitor_x: monitor.position().x,
+                                    monitor_y: monitor.position().y,
+                                    scale: monitor.scale_factor(),
+                                });
+                                last.push((f64::MIN, f64::MIN));
+                                created_any = true;
+                            }
+                        }
+                    }
+                    if created_any {
+                        raise_toolbar(&app_handle);
+                    }
+                }
+            }
+
+            if let Ok(pos) = app_handle.cursor_position() {
                 for (idx, overlay) in overlays.iter().enumerate() {
                     // Convert screen-physical coords to this overlay's logical coords.
                     let x = (pos.x - overlay.monitor_x as f64) / overlay.scale;
                     let y = (pos.y - overlay.monitor_y as f64) / overlay.scale;
                     if (x - last[idx].0).abs() > 0.25 || (y - last[idx].1).abs() > 0.25 {
                         last[idx] = (x, y);
-                        let _ = app.emit_to(&overlay.label, "cursor-moved", CursorMovedPayload { x, y });
+                        let _ = app_handle.emit_to(&overlay.label, "cursor-moved", CursorMovedPayload { x, y });
                     }
                 }
             }

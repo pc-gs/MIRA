@@ -120,6 +120,20 @@ export function Toolbar() {
     + (toolsExpanded ? TOOLBAR_WIDTH_TOOLS_DELTA : 0)
     + (colorsExpanded ? TOOLBAR_WIDTH_COLORS_DELTA : 0);
 
+  useEffect(() => {
+    const unlisten = listen("request-state", () => {
+      // Use refs to broadcast the latest state whenever an overlay requests it
+      void invoke("emit_to_overlay", { event: "drawing-toggled", payload: { enabled: drawingEnabledRef.current } });
+      void invoke("emit_to_overlay", { event: "tool-changed", payload: { tool: currentTool } });
+      void invoke("emit_to_overlay", { event: "color-changed", payload: { color: currentColor } });
+      void invoke("emit_to_overlay", { event: "size-changed", payload: { size: currentSize } });
+      void invoke("emit_to_overlay", { event: "spotlight-toggled", payload: { enabled: spotlightEnabledRef.current } });
+    });
+    return () => {
+      unlisten.then((fn) => fn()).catch(console.error);
+    };
+  }, [currentTool, currentColor, currentSize]);
+
   // ── Global shortcut listeners (registered once — state read via refs) ────
 
   useEffect(() => {
@@ -185,19 +199,19 @@ export function Toolbar() {
       </button>
 
       {/* Toggle visibility */}
-      <Btn active={overlayVisible} onClick={() => applyOverlayVisible(!overlayVisible)} title="Toggle (⌘⇧X)">
+      <Btn active={overlayVisible} onClick={() => applyOverlayVisible(!overlayVisible)} title="Toggle (⌃⇧X)">
         <EyeIcon on={overlayVisible} />
       </Btn>
 
       <Sep />
 
       {/* Pencil */}
-      <Btn active={drawingEnabled && currentTool === "pen"} disabled={!overlayVisible} onClick={() => void handlePen()} title="Pencil">
+      <Btn active={drawingEnabled && currentTool === "pen"} disabled={!overlayVisible} onClick={() => void handlePen()} title="Pencil (⌃⇧D)">
         <PenIcon />
       </Btn>
 
       {/* Mouse tracker */}
-      <Btn active={spotlightEnabled} disabled={!overlayVisible} onClick={() => applySpotlight(!spotlightEnabled)} title="Mouse tracker (⌘⇧S)">
+      <Btn active={spotlightEnabled} disabled={!overlayVisible} onClick={() => applySpotlight(!spotlightEnabled)} title="Mouse tracker (⌃⇧S)">
         <SpotIcon />
       </Btn>
 
@@ -267,9 +281,9 @@ export function Toolbar() {
       <Sep />
 
       {/* Undo / Redo / Clear */}
-      <Btn onClick={handleUndo} title="Undo (⌘⇧Z)"><UndoIcon /></Btn>
-      <Btn onClick={handleRedo} title="Redo (⌘⇧Y)"><RedoIcon /></Btn>
-      <Btn onClick={handleClear} title="Clear (⌘⇧C)"><TrashIcon /></Btn>
+      <Btn onClick={handleUndo} title="Undo (⌃⇧Z)"><UndoIcon /></Btn>
+      <Btn onClick={handleRedo} title="Redo (⌃⇧Y)"><RedoIcon /></Btn>
+      <Btn onClick={handleClear} title="Clear (⌃⇧C)"><TrashIcon /></Btn>
 
       <Sep />
 
