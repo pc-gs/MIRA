@@ -215,12 +215,13 @@ export function useDrawing({
         fgCtx.moveTo(pt.x, pt.y);
       } else {
         currentPointsRef.current = [];
+        const endPt = e.shiftKey ? applyShiftConstraint(pt, pt, tool) : pt;
         previewStrokeRef.current = {
           tool,
           color,
           width: lineWidth,
           start: pt,
-          end: pt,
+          end: endPt,
         };
         drawStroke(fgCtx, previewStrokeRef.current);
       }
@@ -229,7 +230,7 @@ export function useDrawing({
     const onMove = (e: PointerEvent) => {
       if (!isDrawingRef.current) return;
       const rect = fgCanvas.getBoundingClientRect();
-      const pt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      let pt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
       const fgCtx = getFgCtx();
       if (!fgCtx) return;
 
@@ -238,6 +239,9 @@ export function useDrawing({
         fgCtx.lineTo(pt.x, pt.y);
         fgCtx.stroke();
       } else if (previewStrokeRef.current?.start) {
+        if (e.shiftKey) {
+          pt = applyShiftConstraint(previewStrokeRef.current.start, pt, tool);
+        }
         previewStrokeRef.current = {
           ...previewStrokeRef.current,
           end: pt,
@@ -247,7 +251,7 @@ export function useDrawing({
       }
     };
 
-    const onUp = () => {
+    const onUp = (e: PointerEvent) => {
       if (!isDrawingRef.current) return;
       isDrawingRef.current = false;
 
@@ -265,14 +269,19 @@ export function useDrawing({
         previewStrokeRef.current?.start &&
         previewStrokeRef.current.end
       ) {
-        const { start, end } = previewStrokeRef.current;
+        const rect = fgCanvas.getBoundingClientRect();
+        let pt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        if (e.shiftKey) {
+          pt = applyShiftConstraint(previewStrokeRef.current.start, pt, tool);
+        }
+        const { start } = previewStrokeRef.current;
         if (
-          Math.abs(end.x - start.x) > 0.5 ||
-          Math.abs(end.y - start.y) > 0.5
+          Math.abs(pt.x - start.x) > 0.5 ||
+          Math.abs(pt.y - start.y) > 0.5
         ) {
           strokesRef.current = [
             ...strokesRef.current,
-            previewStrokeRef.current,
+            { ...previewStrokeRef.current, end: pt },
           ];
           addedStroke = true;
         }
@@ -343,5 +352,16 @@ export function useDrawing({
       fgCtx.clearRect(0, 0, fgCanvas.width, fgCanvas.height);
   }, [getBgCtx, getFgCtx]);
 
-  return { bgCanvasRef, fgCanvasRef, undo, redo, clear };
+  const addTextStroke = useCallback(
+    (text: string, position: Point, color: string, width: number) => {
+      strokesRef.current = [
+        ...strokesRef.current,
+        { tool: "text", text, position, color, width },
+      ];
+      replayStrokes(strokesRef.current);
+    },
+    [replayStrokes],
+  );
+
+  return { bgCanvasRef, fgCanvasRef, undo, redo, clear, addTextStroke };
 }

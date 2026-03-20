@@ -12,13 +12,37 @@ export function Canvas() {
   const [lineWidth, setLineWidth] = useState(6);
   const [spotlightEnabled, setSpotlightEnabled] = useState(false);
   const [cursor, setCursor] = useState({ x: 0, y: 0 });
+  const [textInput, setTextInput] = useState<{ x: number; y: number; color: string; lineWidth: number } | null>(null);
 
-  const { bgCanvasRef, fgCanvasRef, undo, redo, clear } = useDrawing({
+  const { bgCanvasRef, fgCanvasRef, undo, redo, clear, addTextStroke } = useDrawing({
     color,
     lineWidth,
     enabled: drawingEnabled,
     tool,
   });
+
+  const handleTextSubmit = (text: string) => {
+    if (textInput && text.trim()) {
+      addTextStroke(text, { x: textInput.x, y: textInput.y }, textInput.color, textInput.lineWidth);
+    }
+    setTextInput(null);
+  };
+
+  const handleTextCancel = () => {
+    setTextInput(null);
+  };
+
+  const handleCanvasClick = (e: React.MouseEvent) => {
+    if (tool === "text" && drawingEnabled) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      setTextInput({
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top,
+        color,
+        lineWidth,
+      });
+    }
+  };
 
   useEffect(() => {
     // Request initial state from the toolbar in case this overlay spawned dynamically
@@ -69,6 +93,7 @@ export function Canvas() {
     <div
       className="fixed inset-0 w-full h-full"
       style={{ cursor: drawingEnabled ? "crosshair" : "default" }}
+      onClick={handleCanvasClick}
     >
       <canvas
         ref={bgCanvasRef}
