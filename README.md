@@ -29,6 +29,11 @@ It is designed for live demos, teaching sessions, walkthroughs, and screen share
 
 macOS may require Accessibility permission for global keyboard monitoring.
 
+## Requirements
+
+- macOS 13 or later
+- Xcode 16 or later for local development
+
 ## Build Locally
 
 Open `Mira.xcodeproj` in Xcode and build the `Mira` scheme.
@@ -45,6 +50,6 @@ xcodebuild \
   build
 ```
 
-## Notes
+## Development
 
-This repository replaces the original Tauri/React implementation with a native macOS app. The app intentionally uses AppKit for the overlay windows and pointer-level drawing surface, while SwiftUI handles the toolbar and popover controls.
+The app uses AppKit for transparent overlay windows and pointer-level drawing, while SwiftUI powers the floating toolbar and popover controls.
