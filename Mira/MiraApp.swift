@@ -1,17 +1,12 @@
-//
-//  MiraApp.swift
-//  Mira
-//
-//  Created by pcsantos on 29/04/2026.
-//
-
 import SwiftUI
 
 @main
 struct MiraApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        Settings {
+            EmptyView()
         }
     }
 }
