@@ -28,16 +28,12 @@ export function Toolbar() {
 
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Refs so shortcut listeners (registered once) always read current state
-  // without needing to re-subscribe on every state change.
   const overlayVisibleRef   = useRef(overlayVisible);
   const drawingEnabledRef   = useRef(drawingEnabled);
   const spotlightEnabledRef = useRef(spotlightEnabled);
   useEffect(() => { overlayVisibleRef.current   = overlayVisible;   }, [overlayVisible]);
   useEffect(() => { drawingEnabledRef.current   = drawingEnabled;   }, [drawingEnabled]);
   useEffect(() => { spotlightEnabledRef.current = spotlightEnabled; }, [spotlightEnabled]);
-
-  // ── Overlay state changes ────────────────────────────────────────────────
 
   const applyOverlayVisible = useCallback(async (visible: boolean) => {
     setOverlayVisible(visible);
@@ -127,12 +123,23 @@ export function Toolbar() {
     await invoke("reset_toolbar_position");
   }, []);
 
-  const handleScreenshot = useCallback(() => {
+  const handleScreenshot = useCallback(async () => {
     setToastMessage("Capturando...");
-    setTimeout(() => {
-      setToastMessage("Copiado para Área de Transferência!");
-      setTimeout(() => setToastMessage(null), 2500);
-    }, 400);
+    await invoke("emit_to_overlay", { event: "request-screenshot", payload: null });
+  }, []);
+
+  useEffect(() => {
+    const unlisten = listen<{ success: boolean }>("screenshot-result", (e) => {
+      if (e.payload.success) {
+        setToastMessage("Copiado para Área de Transferência!");
+      } else {
+        setToastMessage("Erro ao capturar tela");
+      }
+      setTimeout(() => setToastMessage(null), 3000);
+    });
+    return () => {
+      unlisten.then((fn) => fn()).catch(console.error);
+    };
   }, []);
 
   useEffect(() => {
@@ -161,6 +168,7 @@ export function Toolbar() {
   const handleQuit = useCallback(async () => {
     await invoke("quit_app");
   }, []);
+
   const toggleColorsExpanded = useCallback(() => {
     setColorsExpanded((v) => !v);
   }, []);
@@ -177,8 +185,17 @@ export function Toolbar() {
     + (colorsExpanded ? TOOLBAR_WIDTH_COLORS_DELTA : 0);
 
   useEffect(() => {
+    if (settingsOpen) {
+      void invoke("set_toolbar_size", { width: 440, height: 420 });
+    } else if (collapsed) {
+      void invoke("set_toolbar_size", { width: 56, height: 56 });
+    } else {
+      void invoke("set_toolbar_size", { width: toolbarWidth, height: 60 });
+    }
+  }, [settingsOpen, collapsed, toolbarWidth]);
+
+  useEffect(() => {
     const unlisten = listen("request-state", () => {
-      // Use refs to broadcast the latest state whenever an overlay requests it
       void invoke("emit_to_overlay", { event: "drawing-toggled", payload: { enabled: drawingEnabledRef.current } });
       void invoke("emit_to_overlay", { event: "tool-changed", payload: { tool: currentTool } });
       void invoke("emit_to_overlay", { event: "color-changed", payload: { color: currentColor } });
@@ -190,8 +207,6 @@ export function Toolbar() {
     };
   }, [currentTool, currentColor, currentSize]);
 
-  // ── Global shortcut listeners (registered once — state read via refs) ────
-
   useEffect(() => {
     const subs: Array<() => void> = [];
     (async () => {
@@ -200,9 +215,8 @@ export function Toolbar() {
       subs.push(await listen("shortcut-draw-toggle", () => applyDrawingEnabled(!drawingEnabledRef.current)));
     })();
     return () => subs.forEach((fn) => fn());
-  }, [applyOverlayVisible, applyDrawingEnabled, applySpotlight]); // stable callbacks, register once
+  }, [applyOverlayVisible, applyDrawingEnabled, applySpotlight]);
 
-  // Persist toolbar position whenever it is dragged.
   useEffect(() => {
     const win = getCurrentWindow();
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -224,20 +238,24 @@ export function Toolbar() {
     };
   }, []);
 
-  useEffect(() => {
-    void invoke("set_toolbar_width", { width: toolbarWidth });
-  }, [toolbarWidth]);
-
-  // ── Render ───────────────────────────────────────────────────────────────
+  if (collapsed) {
+    return (
+      <div
+        onMouseEnter={() => setCollapsed(false)}
+        onClick={() => setCollapsed(false)}
+        title="Clique ou passe o mouse para expandir a barra de ferramentas"
+        className="w-[52px] h-[52px] bg-neutral-900/95 border-2 border-blue-500/80 rounded-full shadow-2xl flex items-center justify-center cursor-pointer text-blue-400 hover:text-white hover:scale-110 transition-all select-none backdrop-blur-md"
+      >
+        <EyeIcon on={overlayVisible} />
+      </div>
+    );
+  }
 
   return (
     <div
-      className={`flex items-center px-2.5 h-[60px] bg-neutral-900 rounded-xl shadow-2xl select-none transition-all duration-300 ${
-        collapsed ? "opacity-30 scale-95 hover:opacity-100 hover:scale-100" : "opacity-100 scale-100"
-      }`}
+      className="flex items-center px-2.5 h-[60px] bg-neutral-900 rounded-xl shadow-2xl select-none"
       style={{ width: toolbarWidth }}
     >
-      {/* Explicit drag handle for reliable toolbar movement on all clickable layouts */}
       <button
         onMouseDown={(e) => {
           e.preventDefault();
@@ -256,34 +274,28 @@ export function Toolbar() {
         </svg>
       </button>
 
-      {/* Toggle visibility */}
       <Btn active={overlayVisible} onClick={() => applyOverlayVisible(!overlayVisible)} title="Toggle (⌃⇧X)">
         <EyeIcon on={overlayVisible} />
       </Btn>
 
       <Sep />
 
-      {/* Pencil */}
       <Btn active={drawingEnabled && currentTool === "pen"} disabled={!overlayVisible} onClick={() => void handlePen()} title="Caneta (⌃⇧D)">
         <PenIcon />
       </Btn>
 
-      {/* Highlighter */}
       <Btn active={drawingEnabled && currentTool === "highlighter"} disabled={!overlayVisible} onClick={() => void handleHighlighter()} title="Marca-Texto">
         <HighlighterIcon />
       </Btn>
 
-      {/* Eraser */}
       <Btn active={drawingEnabled && currentTool === "eraser"} disabled={!overlayVisible} onClick={() => void handleEraser()} title="Borracha">
         <EraserIcon />
       </Btn>
 
-      {/* Mouse tracker */}
       <Btn active={spotlightEnabled} disabled={!overlayVisible} onClick={() => applySpotlight(!spotlightEnabled)} title="Spotlight / Pointer (⌃⇧S)">
         <SpotIcon />
       </Btn>
 
-      {/* Shape tools (collapsible) */}
       <div className="flex items-center gap-1 ml-1">
         {(toolsExpanded ? SHAPE_TOOLS : [currentShapeTool]).map((tool) => (
           <Btn
@@ -307,7 +319,6 @@ export function Toolbar() {
 
       <Sep />
 
-      {/* Colors */}
       <div className="flex flex-shrink-0 gap-1">
         {visibleColors.map((c) => (
           <button
@@ -332,7 +343,6 @@ export function Toolbar() {
 
       <Sep />
 
-      {/* Pen sizes */}
       <div className="flex flex-shrink-0 gap-0.5 items-center">
         {PEN_SIZES.map((s) => (
           <button
@@ -348,22 +358,18 @@ export function Toolbar() {
 
       <Sep />
 
-      {/* Undo / Redo / Clear */}
       <Btn onClick={handleUndo} title="Desfazer (⌃⇧Z)"><UndoIcon /></Btn>
       <Btn onClick={handleRedo} title="Refazer (⌃⇧Y)"><RedoIcon /></Btn>
       <Btn onClick={handleClear} title="Limpar tudo (⌃⇧C)"><TrashIcon /></Btn>
 
       <Sep />
 
-      {/* Reset toolbar position */}
       <Btn onClick={handleResetPosition} title="Resetar posição da barra"><ResetIcon /></Btn>
 
       <Sep />
 
-      {/* Screenshot Export */}
       <Btn onClick={handleScreenshot} title="Capturar Tela / Copiar (Screenshot)"><CameraIcon /></Btn>
 
-      {/* Presentation Auto-Hide Mode */}
       <Btn
         active={presentationMode}
         onClick={() => setPresentationMode((v) => !v)}
@@ -372,36 +378,37 @@ export function Toolbar() {
         <PresentationIcon />
       </Btn>
 
-      {/* Settings / Hotkeys */}
       <Btn onClick={() => setSettingsOpen(true)} title="Configurações de Atalhos"><SettingsIcon /></Btn>
 
       <Sep />
 
-      {/* Quit */}
       <Btn onClick={handleQuit} title="Sair do aplicativo"><QuitIcon /></Btn>
 
-      {/* Toast notification */}
       {toastMessage && (
         <div className="absolute -bottom-10 left-1/2 -translate-x-1/2 px-3 py-1 bg-neutral-800 border border-neutral-700 text-white text-xs font-medium rounded-full shadow-lg transition-all animate-bounce z-50">
           {toastMessage}
         </div>
       )}
 
-      {/* Settings Modal */}
       <HotkeyModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   );
 }
 
-// ── Small reusables ───────────────────────────────────────────────────────────
+interface BtnProps {
+  onClick: () => void;
+  active?: boolean;
+  disabled?: boolean;
+  title?: string;
+  children: React.ReactNode;
+}
 
-function Btn({ onClick, active, disabled, title, children }: {
-  onClick: () => void; active?: boolean; disabled?: boolean;
-  title?: string; children: React.ReactNode;
-}) {
+function Btn({ onClick, active, disabled, title, children }: BtnProps) {
   return (
     <button
-      onClick={onClick} disabled={disabled} title={title}
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
       className={[
         "flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md transition-colors text-white mx-[1px]",
         active ? "bg-blue-600 hover:bg-blue-500" : "hover:bg-neutral-700",
@@ -417,7 +424,6 @@ function Sep() {
   return <div className="w-px h-7 bg-neutral-700 mx-1.5 flex-shrink-0" />;
 }
 
-// Inline SVG icons (stroke="currentColor", no icon lib needed)
 function EyeIcon({ on }: { on: boolean }) {
   return on
     ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>

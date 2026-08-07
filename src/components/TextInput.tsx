@@ -70,7 +70,7 @@ export function TextInput({
       onBlur={handleBlur}
       onClick={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
-      className="absolute bg-transparent outline-none border-b border-blue-400/60 focus:border-blue-400 px-0.5 py-0 select-text z-50 transition-colors"
+      className="absolute bg-transparent border-none outline-none focus:outline-none focus:ring-0 p-0 select-text z-50 caret-current"
       style={{
         left: x,
         top: y,
@@ -79,7 +79,8 @@ export function TextInput({
         fontSize: `${fontSize * 3}px`,
         fontFamily: "system-ui, -apple-system, sans-serif",
         lineHeight: 1.2,
-        minWidth: "60px",
+        minWidth: "40px",
+        width: `${Math.max(60, (text.length || 6) * (fontSize * 1.8))}px`,
       }}
       placeholder="Digite..."
     />

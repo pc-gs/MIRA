@@ -112,7 +112,7 @@ fn quit_app(app: AppHandle) {
 }
 
 #[tauri::command]
-fn set_toolbar_width(app: AppHandle, width: f64) -> Result<(), String> {
+fn set_toolbar_size(app: AppHandle, width: f64, height: Option<f64>) -> Result<(), String> {
     let toolbar: WebviewWindow = app
         .get_webview_window("toolbar")
         .ok_or("toolbar window not found")?;
@@ -123,14 +123,15 @@ fn set_toolbar_width(app: AppHandle, width: f64) -> Result<(), String> {
         .ok_or("no monitor available")?;
     let work_area = monitor.work_area();
     let scale = monitor.scale_factor();
-    let clamped_width = width.clamp(360.0, 900.0);
-    let toolbar_w_phys = (clamped_width * scale) as i32;
-    let toolbar_h_phys = (TOOLBAR_LOGICAL_HEIGHT * scale) as i32;
+    let target_h = height.unwrap_or(TOOLBAR_LOGICAL_HEIGHT);
+
+    let toolbar_w_phys = (width * scale) as i32;
+    let toolbar_h_phys = (target_h * scale) as i32;
 
     toolbar
         .set_size(tauri::Size::Logical(tauri::LogicalSize {
-            width: clamped_width,
-            height: TOOLBAR_LOGICAL_HEIGHT,
+            width,
+            height: target_h,
         }))
         .map_err(|e| e.to_string())?;
 
@@ -148,9 +149,16 @@ fn set_toolbar_width(app: AppHandle, width: f64) -> Result<(), String> {
         }))
         .map_err(|e| e.to_string())?;
 
-    save_toolbar_position(app, clamped.x, clamped.y)
+    if target_h <= TOOLBAR_LOGICAL_HEIGHT {
+        let _ = save_toolbar_position(app, clamped.x, clamped.y);
+    }
+    Ok(())
 }
 
+#[tauri::command]
+fn set_toolbar_width(app: AppHandle, width: f64) -> Result<(), String> {
+    set_toolbar_size(app, width, None)
+}
 
 // ── Entry Point ───────────────────────────────────────────────────────────────
 
@@ -176,6 +184,7 @@ pub fn run() {
             reset_toolbar_position,
             quit_app,
             set_toolbar_width,
+            set_toolbar_size,
         ])
         .setup(|app| {
             setup_windows(app)?;

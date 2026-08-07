@@ -540,6 +540,35 @@ export function useDrawing({
 
   const getStrokes = useCallback(() => strokesRef.current, []);
 
+  const exportScreenshot = useCallback(async (): Promise<boolean> => {
+    const bgCanvas = bgCanvasRef.current;
+    if (!bgCanvas) return false;
+
+    return new Promise<boolean>((resolve) => {
+      bgCanvas.toBlob(async (blob) => {
+        if (!blob) {
+          resolve(false);
+          return;
+        }
+        try {
+          await navigator.clipboard.write([
+            new ClipboardItem({ [blob.type]: blob }),
+          ]);
+          resolve(true);
+        } catch (err) {
+          console.error("Clipboard write failed, fallback to file download", err);
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `mira-annotation-${Date.now()}.png`;
+          a.click();
+          URL.revokeObjectURL(url);
+          resolve(true);
+        }
+      }, "image/png");
+    });
+  }, []);
+
   return {
     bgCanvasRef,
     fgCanvasRef,
@@ -553,5 +582,6 @@ export function useDrawing({
     findTextStrokeAt,
     getStrokes,
     replayStrokes,
+    exportScreenshot,
   };
 }

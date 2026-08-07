@@ -44,6 +44,7 @@ export function Canvas() {
     moveTextStroke,
     deleteStroke,
     findTextStrokeAt,
+    exportScreenshot,
   } = useDrawing({
     color,
     lineWidth,
@@ -235,6 +236,12 @@ export function Canvas() {
       subs.push(await listen("shortcut-clear", () => clear()));
       subs.push(await listen("shortcut-undo", () => undo()));
       subs.push(await listen("shortcut-redo", () => redo()));
+      subs.push(
+        await listen("request-screenshot", async () => {
+          const ok = await exportScreenshot();
+          void emit("screenshot-result", { success: ok });
+        }),
+      );
     })();
     return () => subs.forEach((fn) => fn());
   }, [clear, undo, redo]);
