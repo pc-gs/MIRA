@@ -13,13 +13,14 @@ If this is useful for your workflow, feel free to use it, adapt it, and contribu
 ## What Mira Does
 
 - Opens a transparent, always-on-top drawing overlay
-- Provides a floating draggable toolbar
-- Supports pen + basic geometric shapes (line, rectangle, ellipse, arrow)
-- Offers color and stroke controls
-- Includes undo, redo, clear, and reset actions
-- Includes spotlight/pointer support for presentations
-- Supports multiple monitors
-- Supports global shortcuts for fast control
+- Provides a floating, low-profile draggable toolbar
+- Pen, highlighter, eraser, and shapes (line, rectangle, ellipse, arrow)
+- Text annotations (click to place, click again to edit or drag)
+- Color and stroke controls
+- Undo / redo / clear (eraser and clear are fully undoable)
+- Spotlight pointer for live presentations
+- Multi-monitor overlays
+- Reliable global shortcuts (no fake settings UI)
 
 ## Why This Exists
 

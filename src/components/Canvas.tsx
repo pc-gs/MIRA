@@ -5,13 +5,24 @@ import { Spotlight } from "./Spotlight";
 import { TextInput } from "./TextInput";
 import type { Tool, Point, Stroke } from "../types";
 
-interface ActiveTextInputState {
+interface ActiveTextInput {
   id?: string;
   x: number;
   y: number;
   color: string;
   lineWidth: number;
   initialText: string;
+}
+
+interface TextDrag {
+  id: string;
+  startMouse: Point;
+  startPos: Point;
+  color: string;
+  width: number;
+  text: string;
+  before: Stroke[];
+  moved: boolean;
 }
 
 export function Canvas() {
@@ -21,17 +32,10 @@ export function Canvas() {
   const [lineWidth, setLineWidth] = useState(6);
   const [spotlightEnabled, setSpotlightEnabled] = useState(false);
   const [cursor, setCursor] = useState({ x: 0, y: 0 });
-  const [textInput, setTextInput] = useState<ActiveTextInputState | null>(null);
-  const [hoveredTextId, setHoveredTextId] = useState<string | null>(null);
+  const [textInput, setTextInput] = useState<ActiveTextInput | null>(null);
+  const [hoverText, setHoverText] = useState(false);
 
-  // Ref for tracking active text drag
-  const textDragRef = useRef<{
-    strokeId: string;
-    stroke: Stroke;
-    startMouse: Point;
-    startPos: Point;
-    hasDragged: boolean;
-  } | null>(null);
+  const textDragRef = useRef<TextDrag | null>(null);
 
   const {
     bgCanvasRef,
@@ -41,145 +45,148 @@ export function Canvas() {
     clear,
     addTextStroke,
     updateTextStroke,
-    moveTextStroke,
+    previewMoveText,
+    commitMoveText,
     deleteStroke,
     findTextStrokeAt,
-    exportScreenshot,
+    getStrokesSnapshot,
+    setHiddenStrokeId,
   } = useDrawing({
     color,
     lineWidth,
-    enabled: drawingEnabled,
+    enabled: drawingEnabled && !textInput,
     tool,
   });
 
+  // While editing, hide the underlying stroke so the input is the only visible text
+  useEffect(() => {
+    setHiddenStrokeId(textInput?.id ?? null);
+    return () => setHiddenStrokeId(null);
+  }, [textInput?.id, setHiddenStrokeId]);
+
   const handleTextSubmit = useCallback(
-    (text: string, position: { x: number; y: number }) => {
-      if (textInput) {
-        if (textInput.id) {
-          updateTextStroke(textInput.id, text, position);
-        } else {
-          addTextStroke(text, position, textInput.color, textInput.lineWidth);
-        }
+    (text: string) => {
+      if (!textInput) return;
+      if (textInput.id) {
+        updateTextStroke(textInput.id, text, { x: textInput.x, y: textInput.y });
+      } else {
+        addTextStroke(text, { x: textInput.x, y: textInput.y }, textInput.color, textInput.lineWidth);
       }
       setTextInput(null);
     },
     [textInput, addTextStroke, updateTextStroke],
   );
 
-  const handleTextCancel = useCallback(() => {
-    setTextInput(null);
-  }, []);
+  const handleTextCancel = useCallback(() => setTextInput(null), []);
 
   const handleTextDelete = useCallback(() => {
-    if (textInput?.id) {
-      deleteStroke(textInput.id);
-    }
+    if (textInput?.id) deleteStroke(textInput.id);
     setTextInput(null);
   }, [textInput, deleteStroke]);
 
-  // Pointer Down for Canvas (handles direct text drag and text editing)
-  const handlePointerDown = (e: React.PointerEvent) => {
-    if (!drawingEnabled) return;
-
+  const pointFromEvent = (e: React.PointerEvent | React.MouseEvent): Point => {
     const rect = e.currentTarget.getBoundingClientRect();
-    const pt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  };
 
-    const clickedText = findTextStrokeAt(pt);
+  // Text tool: create / edit / drag. Other tools leave drawing to useDrawing.
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (!drawingEnabled || tool !== "text" || textInput) return;
 
-    if (clickedText && clickedText.id && clickedText.position) {
-      // Start text dragging session
+    const pt = pointFromEvent(e);
+    const hit = findTextStrokeAt(pt);
+
+    if (hit?.id && hit.position && hit.text) {
+      e.stopPropagation();
       textDragRef.current = {
-        strokeId: clickedText.id,
-        stroke: clickedText,
+        id: hit.id,
         startMouse: pt,
-        startPos: { ...clickedText.position },
-        hasDragged: false,
+        startPos: { ...hit.position },
+        color: hit.color,
+        width: hit.width,
+        text: hit.text,
+        before: getStrokesSnapshot(),
+        moved: false,
       };
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     }
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
     if (!drawingEnabled) {
-      if (hoveredTextId) setHoveredTextId(null);
+      if (hoverText) setHoverText(false);
       return;
     }
 
-    const rect = e.currentTarget.getBoundingClientRect();
-    const pt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const pt = pointFromEvent(e);
 
-    // If currently dragging a text object
     if (textDragRef.current) {
-      const dx = pt.x - textDragRef.current.startMouse.x;
-      const dy = pt.y - textDragRef.current.startMouse.y;
-
-      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
-        textDragRef.current.hasDragged = true;
-      }
-
-      const newPos = {
-        x: textDragRef.current.startPos.x + dx,
-        y: textDragRef.current.startPos.y + dy,
-      };
-
-      moveTextStroke(textDragRef.current.strokeId, newPos);
+      const drag = textDragRef.current;
+      const dx = pt.x - drag.startMouse.x;
+      const dy = pt.y - drag.startMouse.y;
+      if (Math.hypot(dx, dy) > 3) drag.moved = true;
+      previewMoveText(drag.id, {
+        x: drag.startPos.x + dx,
+        y: drag.startPos.y + dy,
+      });
       return;
     }
 
-    // Hover state check
-    const hovered = findTextStrokeAt(pt);
-    if (hovered?.id) {
-      setHoveredTextId(hovered.id);
-    } else if (hoveredTextId) {
-      setHoveredTextId(null);
+    if (tool === "text" && !textInput) {
+      setHoverText(!!findTextStrokeAt(pt));
+    } else if (hoverText) {
+      setHoverText(false);
     }
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
-    if (!drawingEnabled) return;
+    if (!drawingEnabled || tool !== "text") return;
 
-    const rect = e.currentTarget.getBoundingClientRect();
-    const pt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const pt = pointFromEvent(e);
 
     if (textDragRef.current) {
-      const { stroke, hasDragged } = textDragRef.current;
+      const drag = textDragRef.current;
       textDragRef.current = null;
 
-      // If user clicked without dragging (or in text tool mode), open inline editor!
-      if (!hasDragged && stroke.id && stroke.text && stroke.position) {
+      if (drag.moved) {
+        const finalPos = {
+          x: drag.startPos.x + (pt.x - drag.startMouse.x),
+          y: drag.startPos.y + (pt.y - drag.startMouse.y),
+        };
+        commitMoveText(drag.before, drag.id, finalPos);
+      } else {
+        // Click without drag → edit in place
         setTextInput({
-          id: stroke.id,
-          x: stroke.position.x,
-          y: stroke.position.y,
-          color: stroke.color,
-          lineWidth: stroke.width,
-          initialText: stroke.text,
+          id: drag.id,
+          x: drag.startPos.x,
+          y: drag.startPos.y,
+          color: drag.color,
+          lineWidth: drag.width,
+          initialText: drag.text,
         });
       }
       return;
     }
 
-    // Click on empty space in text tool mode -> create new text
-    if (tool === "text" && !textInput) {
-      const clickedText = findTextStrokeAt(pt);
-      if (!clickedText) {
-        setTextInput({
-          x: pt.x,
-          y: pt.y,
-          color,
-          lineWidth,
-          initialText: "",
-        });
-      }
+    if (textInput) return;
+
+    // Empty click → new text
+    if (!findTextStrokeAt(pt)) {
+      setTextInput({
+        x: pt.x,
+        y: pt.y,
+        color,
+        lineWidth,
+        initialText: "",
+      });
     }
   };
 
-  // Keyboard listeners for Cmd+Z / Cmd+Shift+Z / Cmd+Y
+  // Local undo when the overlay has focus (global shortcuts also fire via Rust)
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore if user is currently typing inside an input field
-      if (document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA") {
-        return;
-      }
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (document.activeElement as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
 
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
         e.preventDefault();
@@ -190,74 +197,64 @@ export function Canvas() {
         redo();
       }
     };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, [undo, redo]);
 
   useEffect(() => {
-    // Request initial state from toolbar
     void emit("request-state");
   }, []);
 
   useEffect(() => {
     const subs: Array<() => void> = [];
+    let cancelled = false;
+
     (async () => {
-      subs.push(
-        await listen<{ enabled: boolean }>("drawing-toggled", (e) =>
-          setDrawingEnabled(e.payload.enabled),
-        ),
-      );
-      subs.push(
-        await listen<{ tool: Tool }>("tool-changed", (e) =>
-          setTool(e.payload.tool),
-        ),
-      );
-      subs.push(
-        await listen<{ color: string }>("color-changed", (e) =>
-          setColor(e.payload.color),
-        ),
-      );
-      subs.push(
-        await listen<{ size: number }>("size-changed", (e) =>
-          setLineWidth(e.payload.size),
-        ),
-      );
-      subs.push(
-        await listen<{ enabled: boolean }>("spotlight-toggled", (e) =>
-          setSpotlightEnabled(e.payload.enabled),
-        ),
-      );
-      subs.push(
-        await listen<{ x: number; y: number }>("cursor-moved", (e) =>
-          setCursor({ x: e.payload.x, y: e.payload.y }),
-        ),
-      );
-      subs.push(await listen("shortcut-clear", () => clear()));
-      subs.push(await listen("shortcut-undo", () => undo()));
-      subs.push(await listen("shortcut-redo", () => redo()));
-      subs.push(
-        await listen("request-screenshot", async () => {
-          const ok = await exportScreenshot();
-          void emit("screenshot-result", { success: ok });
-        }),
-      );
+      const add = async <T,>(event: string, handler: (payload: T) => void) => {
+        const unlisten = await listen<T>(event, (e) => handler(e.payload));
+        if (cancelled) unlisten();
+        else subs.push(unlisten);
+      };
+
+      await add<{ enabled: boolean }>("drawing-toggled", (p) => setDrawingEnabled(p.enabled));
+      await add<{ tool: Tool }>("tool-changed", (p) => setTool(p.tool));
+      await add<{ color: string }>("color-changed", (p) => setColor(p.color));
+      await add<{ size: number }>("size-changed", (p) => setLineWidth(p.size));
+      await add<{ enabled: boolean }>("spotlight-toggled", (p) => setSpotlightEnabled(p.enabled));
+      await add<{ x: number; y: number }>("cursor-moved", (p) => setCursor({ x: p.x, y: p.y }));
+
+      const uClear = await listen("shortcut-clear", () => clear());
+      const uUndo = await listen("shortcut-undo", () => undo());
+      const uRedo = await listen("shortcut-redo", () => redo());
+      if (cancelled) {
+        uClear();
+        uUndo();
+        uRedo();
+      } else {
+        subs.push(uClear, uUndo, uRedo);
+      }
     })();
-    return () => subs.forEach((fn) => fn());
+
+    return () => {
+      cancelled = true;
+      subs.forEach((fn) => fn());
+    };
   }, [clear, undo, redo]);
+
+  const cursorStyle = !drawingEnabled
+    ? "default"
+    : tool === "text"
+      ? hoverText
+        ? "grab"
+        : "text"
+      : tool === "eraser"
+        ? "none"
+        : "crosshair";
 
   return (
     <div
       className="fixed inset-0 w-full h-full"
-      style={{
-        cursor: drawingEnabled
-          ? hoveredTextId
-            ? "grab"
-            : tool === "text"
-            ? "text"
-            : "crosshair"
-          : "default",
-      }}
+      style={{ cursor: cursorStyle }}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
@@ -269,7 +266,11 @@ export function Canvas() {
       <canvas
         ref={fgCanvasRef}
         className="absolute inset-0 w-full h-full"
-        style={{ touchAction: "none" }}
+        style={{
+          touchAction: "none",
+          // Text interactions are handled on the parent; avoid double-handling
+          pointerEvents: tool === "text" ? "none" : "auto",
+        }}
       />
       {spotlightEnabled && <Spotlight x={cursor.x} y={cursor.y} />}
       {textInput && (

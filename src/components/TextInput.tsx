@@ -6,11 +6,15 @@ interface TextInputProps {
   color: string;
   fontSize: number;
   initialText?: string;
-  onSubmit: (text: string, position: { x: number; y: number }) => void;
+  onSubmit: (text: string) => void;
   onCancel: () => void;
   onDelete?: () => void;
 }
 
+/**
+ * Inline text editor for the overlay.
+ * Intentionally minimal: matches final stroke style so there's no visual jump on commit.
+ */
 export function TextInput({
   x,
   y,
@@ -23,42 +27,45 @@ export function TextInput({
 }: TextInputProps) {
   const [text, setText] = useState(initialText);
   const inputRef = useRef<HTMLInputElement>(null);
-  const submittedRef = useRef(false);
+  const doneRef = useRef(false);
 
   useEffect(() => {
-    inputRef.current?.focus();
-    if (initialText) {
-      inputRef.current?.select();
-    }
+    const el = inputRef.current;
+    if (!el) return;
+    el.focus();
+    if (initialText) el.select();
   }, [initialText]);
+
+  const finish = (value: string) => {
+    if (doneRef.current) return;
+    doneRef.current = true;
+    const trimmed = value.trim();
+    if (trimmed) onSubmit(trimmed);
+    else if (onDelete) onDelete();
+    else onCancel();
+  };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     e.stopPropagation();
     if (e.key === "Enter") {
-      submittedRef.current = true;
-      if (text.trim()) {
-        onSubmit(text.trim(), { x, y });
-      } else if (onDelete) {
-        onDelete();
-      } else {
-        onCancel();
-      }
+      e.preventDefault();
+      finish(text);
     } else if (e.key === "Escape") {
-      submittedRef.current = true;
+      e.preventDefault();
+      doneRef.current = true;
       onCancel();
     }
   };
 
   const handleBlur = () => {
-    if (submittedRef.current) return;
-    if (text.trim()) {
-      onSubmit(text.trim(), { x, y });
-    } else if (onDelete) {
-      onDelete();
-    } else {
-      onCancel();
-    }
+    // Defer so a click on another UI element can cancel first if needed.
+    requestAnimationFrame(() => {
+      if (!doneRef.current) finish(text);
+    });
   };
+
+  const px = fontSize * 3;
+  const width = Math.max(80, (text.length || 4) * px * 0.58 + 12);
 
   return (
     <input
@@ -70,19 +77,26 @@ export function TextInput({
       onBlur={handleBlur}
       onClick={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
-      className="absolute bg-transparent border-none outline-none focus:outline-none focus:ring-0 p-0 select-text z-50 caret-current"
+      onPointerDown={(e) => e.stopPropagation()}
+      spellCheck={false}
+      autoComplete="off"
+      className="absolute z-50 bg-transparent outline-none border-none p-0 m-0"
       style={{
         left: x,
         top: y,
         transform: "translateY(-50%)",
         color,
-        fontSize: `${fontSize * 3}px`,
+        fontSize: `${px}px`,
         fontFamily: "system-ui, -apple-system, sans-serif",
+        fontWeight: 500,
         lineHeight: 1.2,
-        minWidth: "40px",
-        width: `${Math.max(60, (text.length || 6) * (fontSize * 1.8))}px`,
+        width: `${width}px`,
+        minWidth: "80px",
+        // Subtle bottom edge so the caret is findable on any slide background
+        boxShadow: `inset 0 -1px 0 0 ${color}66`,
+        caretColor: color,
       }}
-      placeholder="Digite..."
+      placeholder="…"
     />
   );
 }
