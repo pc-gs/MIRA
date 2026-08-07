@@ -1,9 +1,9 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { listen, emit } from "@tauri-apps/api/event";
 import { useDrawing } from "../hooks/useDrawing";
 import { Spotlight } from "./Spotlight";
 import { TextInput } from "./TextInput";
-import type { Tool } from "../types";
+import type { Tool, Point, Stroke } from "../types";
 
 interface ActiveTextInputState {
   id?: string;
@@ -24,6 +24,15 @@ export function Canvas() {
   const [textInput, setTextInput] = useState<ActiveTextInputState | null>(null);
   const [hoveredTextId, setHoveredTextId] = useState<string | null>(null);
 
+  // Ref for tracking active text drag
+  const textDragRef = useRef<{
+    strokeId: string;
+    stroke: Stroke;
+    startMouse: Point;
+    startPos: Point;
+    hasDragged: boolean;
+  } | null>(null);
+
   const {
     bgCanvasRef,
     fgCanvasRef,
@@ -32,6 +41,7 @@ export function Canvas() {
     clear,
     addTextStroke,
     updateTextStroke,
+    moveTextStroke,
     deleteStroke,
     findTextStrokeAt,
   } = useDrawing({
@@ -45,10 +55,8 @@ export function Canvas() {
     (text: string, position: { x: number; y: number }) => {
       if (textInput) {
         if (textInput.id) {
-          // Editing existing text stroke
           updateTextStroke(textInput.id, text, position);
         } else {
-          // Creating new text stroke
           addTextStroke(text, position, textInput.color, textInput.lineWidth);
         }
       }
@@ -68,44 +76,55 @@ export function Canvas() {
     setTextInput(null);
   }, [textInput, deleteStroke]);
 
-  // Click handler for text tool creation or editing
-  const handleCanvasClick = (e: React.MouseEvent) => {
-    if (!drawingEnabled || tool !== "text") return;
+  // Pointer Down for Canvas (handles direct text drag and text editing)
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (!drawingEnabled) return;
 
     const rect = e.currentTarget.getBoundingClientRect();
     const pt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
 
     const clickedText = findTextStrokeAt(pt);
 
-    if (clickedText && clickedText.id && clickedText.text && clickedText.position) {
-      // Double click or single click existing text -> edit it!
-      setTextInput({
-        id: clickedText.id,
-        x: clickedText.position.x,
-        y: clickedText.position.y,
-        color: clickedText.color,
-        lineWidth: clickedText.width,
-        initialText: clickedText.text,
-      });
-    } else {
-      // Click on empty space -> new text!
-      setTextInput({
-        x: pt.x,
-        y: pt.y,
-        color,
-        lineWidth,
-        initialText: "",
-      });
+    if (clickedText && clickedText.id && clickedText.position) {
+      // Start text dragging session
+      textDragRef.current = {
+        strokeId: clickedText.id,
+        stroke: clickedText,
+        startMouse: pt,
+        startPos: { ...clickedText.position },
+        hasDragged: false,
+      };
     }
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
-    if (!drawingEnabled || tool !== "text" || textInput) {
+    if (!drawingEnabled) {
       if (hoveredTextId) setHoveredTextId(null);
       return;
     }
+
     const rect = e.currentTarget.getBoundingClientRect();
     const pt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+
+    // If currently dragging a text object
+    if (textDragRef.current) {
+      const dx = pt.x - textDragRef.current.startMouse.x;
+      const dy = pt.y - textDragRef.current.startMouse.y;
+
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+        textDragRef.current.hasDragged = true;
+      }
+
+      const newPos = {
+        x: textDragRef.current.startPos.x + dx,
+        y: textDragRef.current.startPos.y + dy,
+      };
+
+      moveTextStroke(textDragRef.current.strokeId, newPos);
+      return;
+    }
+
+    // Hover state check
     const hovered = findTextStrokeAt(pt);
     if (hovered?.id) {
       setHoveredTextId(hovered.id);
@@ -114,8 +133,69 @@ export function Canvas() {
     }
   };
 
+  const handlePointerUp = (e: React.PointerEvent) => {
+    if (!drawingEnabled) return;
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+
+    if (textDragRef.current) {
+      const { stroke, hasDragged } = textDragRef.current;
+      textDragRef.current = null;
+
+      // If user clicked without dragging (or in text tool mode), open inline editor!
+      if (!hasDragged && stroke.id && stroke.text && stroke.position) {
+        setTextInput({
+          id: stroke.id,
+          x: stroke.position.x,
+          y: stroke.position.y,
+          color: stroke.color,
+          lineWidth: stroke.width,
+          initialText: stroke.text,
+        });
+      }
+      return;
+    }
+
+    // Click on empty space in text tool mode -> create new text
+    if (tool === "text" && !textInput) {
+      const clickedText = findTextStrokeAt(pt);
+      if (!clickedText) {
+        setTextInput({
+          x: pt.x,
+          y: pt.y,
+          color,
+          lineWidth,
+          initialText: "",
+        });
+      }
+    }
+  };
+
+  // Keyboard listeners for Cmd+Z / Cmd+Shift+Z / Cmd+Y
   useEffect(() => {
-    // Request initial state from the toolbar in case this overlay spawned dynamically
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if user is currently typing inside an input field
+      if (document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA") {
+        return;
+      }
+
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        redo();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [undo, redo]);
+
+  useEffect(() => {
+    // Request initial state from toolbar
     void emit("request-state");
   }, []);
 
@@ -164,15 +244,16 @@ export function Canvas() {
       className="fixed inset-0 w-full h-full"
       style={{
         cursor: drawingEnabled
-          ? tool === "text"
-            ? hoveredTextId
-              ? "pointer"
-              : "text"
+          ? hoveredTextId
+            ? "grab"
+            : tool === "text"
+            ? "text"
             : "crosshair"
           : "default",
       }}
-      onClick={handleCanvasClick}
+      onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
     >
       <canvas
         ref={bgCanvasRef}

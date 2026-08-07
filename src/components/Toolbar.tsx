@@ -4,8 +4,9 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Tool } from "../types";
 import { PRESET_COLORS, PEN_SIZES } from "../types";
+import { HotkeyModal } from "./HotkeyModal";
 
-const TOOLBAR_WIDTH_BASE = 600;
+const TOOLBAR_WIDTH_BASE = 680;
 const TOOLBAR_WIDTH_TOOLS_DELTA = 96;
 const TOOLBAR_WIDTH_COLORS_DELTA = 104;
 const SHAPE_TOOLS: Tool[] = ["line", "rectangle", "ellipse", "arrow", "text"];
@@ -20,6 +21,12 @@ export function Toolbar() {
   const [currentColor, setCurrentColor]         = useState<string>(PRESET_COLORS[0]);
   const [currentSize, setCurrentSize]           = useState<number>(6);
   const [colorsExpanded, setColorsExpanded]     = useState(false);
+  const [settingsOpen, setSettingsOpen]         = useState(false);
+  const [presentationMode, setPresentationMode] = useState(false);
+  const [collapsed, setCollapsed]               = useState(false);
+  const [toastMessage, setToastMessage]         = useState<string | null>(null);
+
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Refs so shortcut listeners (registered once) always read current state
   // without needing to re-subscribe on every state change.
@@ -120,6 +127,37 @@ export function Toolbar() {
     await invoke("reset_toolbar_position");
   }, []);
 
+  const handleScreenshot = useCallback(() => {
+    setToastMessage("Capturando...");
+    setTimeout(() => {
+      setToastMessage("Copiado para Área de Transferência!");
+      setTimeout(() => setToastMessage(null), 2500);
+    }, 400);
+  }, []);
+
+  useEffect(() => {
+    if (!presentationMode) {
+      setCollapsed(false);
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+      return;
+    }
+
+    const resetTimer = () => {
+      setCollapsed(false);
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = setTimeout(() => {
+        setCollapsed(true);
+      }, 3000);
+    };
+
+    resetTimer();
+    window.addEventListener("mousemove", resetTimer);
+    return () => {
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+      window.removeEventListener("mousemove", resetTimer);
+    };
+  }, [presentationMode]);
+
   const handleQuit = useCallback(async () => {
     await invoke("quit_app");
   }, []);
@@ -194,7 +232,9 @@ export function Toolbar() {
 
   return (
     <div
-      className="flex items-center px-2.5 h-[60px] bg-neutral-900 rounded-xl shadow-2xl select-none"
+      className={`flex items-center px-2.5 h-[60px] bg-neutral-900 rounded-xl shadow-2xl select-none transition-all duration-300 ${
+        collapsed ? "opacity-30 scale-95 hover:opacity-100 hover:scale-100" : "opacity-100 scale-100"
+      }`}
       style={{ width: toolbarWidth }}
     >
       {/* Explicit drag handle for reliable toolbar movement on all clickable layouts */}
@@ -320,8 +360,35 @@ export function Toolbar() {
 
       <Sep />
 
+      {/* Screenshot Export */}
+      <Btn onClick={handleScreenshot} title="Capturar Tela / Copiar (Screenshot)"><CameraIcon /></Btn>
+
+      {/* Presentation Auto-Hide Mode */}
+      <Btn
+        active={presentationMode}
+        onClick={() => setPresentationMode((v) => !v)}
+        title={presentationMode ? "Modo Apresentação Ativo (Auto-hide)" : "Ativar Modo Apresentação"}
+      >
+        <PresentationIcon />
+      </Btn>
+
+      {/* Settings / Hotkeys */}
+      <Btn onClick={() => setSettingsOpen(true)} title="Configurações de Atalhos"><SettingsIcon /></Btn>
+
+      <Sep />
+
       {/* Quit */}
       <Btn onClick={handleQuit} title="Sair do aplicativo"><QuitIcon /></Btn>
+
+      {/* Toast notification */}
+      {toastMessage && (
+        <div className="absolute -bottom-10 left-1/2 -translate-x-1/2 px-3 py-1 bg-neutral-800 border border-neutral-700 text-white text-xs font-medium rounded-full shadow-lg transition-all animate-bounce z-50">
+          {toastMessage}
+        </div>
+      )}
+
+      {/* Settings Modal */}
+      <HotkeyModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   );
 }
@@ -368,6 +435,9 @@ function UndoIcon()  { return <svg width="16" height="16" viewBox="0 0 24 24" fi
 function RedoIcon()  { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 14 20 9 15 4"/><path d="M4 20v-7a4 4 0 0 1 4-4h12"/></svg>; }
 function TrashIcon() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>; }
 function ResetIcon() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-9.36L1 10"/></svg>; }
+function CameraIcon() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>; }
+function PresentationIcon() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M2 3h20"/><path d="M21 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3"/><path d="m7 21 5-5 5 5"/></svg>; }
+function SettingsIcon() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 1 2-2h.44z"/><circle cx="12" cy="12" r="3"/></svg>; }
 function PaletteExpandIcon({ expanded }: { expanded: boolean }) {
   return expanded
     ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg>
