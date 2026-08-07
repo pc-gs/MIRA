@@ -1,9 +1,18 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { listen, emit } from "@tauri-apps/api/event";
 import { useDrawing } from "../hooks/useDrawing";
 import { Spotlight } from "./Spotlight";
 import { TextInput } from "./TextInput";
 import type { Tool } from "../types";
+
+interface ActiveTextInputState {
+  id?: string;
+  x: number;
+  y: number;
+  color: string;
+  lineWidth: number;
+  initialText: string;
+}
 
 export function Canvas() {
   const [drawingEnabled, setDrawingEnabled] = useState(false);
@@ -12,35 +21,96 @@ export function Canvas() {
   const [lineWidth, setLineWidth] = useState(6);
   const [spotlightEnabled, setSpotlightEnabled] = useState(false);
   const [cursor, setCursor] = useState({ x: 0, y: 0 });
-  const [textInput, setTextInput] = useState<{ x: number; y: number; color: string; lineWidth: number } | null>(null);
+  const [textInput, setTextInput] = useState<ActiveTextInputState | null>(null);
+  const [hoveredTextId, setHoveredTextId] = useState<string | null>(null);
 
-  const { bgCanvasRef, fgCanvasRef, undo, redo, clear, addTextStroke } = useDrawing({
+  const {
+    bgCanvasRef,
+    fgCanvasRef,
+    undo,
+    redo,
+    clear,
+    addTextStroke,
+    updateTextStroke,
+    deleteStroke,
+    findTextStrokeAt,
+  } = useDrawing({
     color,
     lineWidth,
     enabled: drawingEnabled,
     tool,
   });
 
-  const handleTextSubmit = (text: string) => {
-    if (textInput && text.trim()) {
-      addTextStroke(text, { x: textInput.x, y: textInput.y }, textInput.color, textInput.lineWidth);
+  const handleTextSubmit = useCallback(
+    (text: string, position: { x: number; y: number }) => {
+      if (textInput) {
+        if (textInput.id) {
+          // Editing existing text stroke
+          updateTextStroke(textInput.id, text, position);
+        } else {
+          // Creating new text stroke
+          addTextStroke(text, position, textInput.color, textInput.lineWidth);
+        }
+      }
+      setTextInput(null);
+    },
+    [textInput, addTextStroke, updateTextStroke],
+  );
+
+  const handleTextCancel = useCallback(() => {
+    setTextInput(null);
+  }, []);
+
+  const handleTextDelete = useCallback(() => {
+    if (textInput?.id) {
+      deleteStroke(textInput.id);
     }
     setTextInput(null);
-  };
+  }, [textInput, deleteStroke]);
 
-  const handleTextCancel = () => {
-    setTextInput(null);
-  };
-
+  // Click handler for text tool creation or editing
   const handleCanvasClick = (e: React.MouseEvent) => {
-    if (tool === "text" && drawingEnabled) {
-      const rect = e.currentTarget.getBoundingClientRect();
+    if (!drawingEnabled || tool !== "text") return;
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+
+    const clickedText = findTextStrokeAt(pt);
+
+    if (clickedText && clickedText.id && clickedText.text && clickedText.position) {
+      // Double click or single click existing text -> edit it!
       setTextInput({
-        x: e.clientX - rect.left,
-        y: e.clientY - rect.top,
+        id: clickedText.id,
+        x: clickedText.position.x,
+        y: clickedText.position.y,
+        color: clickedText.color,
+        lineWidth: clickedText.width,
+        initialText: clickedText.text,
+      });
+    } else {
+      // Click on empty space -> new text!
+      setTextInput({
+        x: pt.x,
+        y: pt.y,
         color,
         lineWidth,
+        initialText: "",
       });
+    }
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (!drawingEnabled || tool !== "text" || textInput) {
+      if (hoveredTextId) setHoveredTextId(null);
+      return;
+    }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const hovered = findTextStrokeAt(pt);
+    if (hovered?.id) {
+      setHoveredTextId(hovered.id);
+    } else if (hoveredTextId) {
+      setHoveredTextId(null);
     }
   };
 
@@ -92,8 +162,17 @@ export function Canvas() {
   return (
     <div
       className="fixed inset-0 w-full h-full"
-      style={{ cursor: drawingEnabled ? "crosshair" : "default" }}
+      style={{
+        cursor: drawingEnabled
+          ? tool === "text"
+            ? hoveredTextId
+              ? "pointer"
+              : "text"
+            : "crosshair"
+          : "default",
+      }}
       onClick={handleCanvasClick}
+      onPointerMove={handlePointerMove}
     >
       <canvas
         ref={bgCanvasRef}
@@ -111,8 +190,10 @@ export function Canvas() {
           y={textInput.y}
           color={textInput.color}
           fontSize={textInput.lineWidth}
+          initialText={textInput.initialText}
           onSubmit={handleTextSubmit}
           onCancel={handleTextCancel}
+          onDelete={textInput.id ? handleTextDelete : undefined}
         />
       )}
     </div>

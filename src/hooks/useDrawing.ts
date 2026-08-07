@@ -38,6 +38,50 @@ function applyShiftConstraint(start: Point, end: Point, tool: Tool): Point {
   return end;
 }
 
+function distanceToSegment(p: Point, a: Point, b: Point): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+
+function strokeHitsPoint(stroke: Stroke, pt: Point, radius: number): boolean {
+  if (stroke.tool === "pen" || stroke.tool === "highlighter") {
+    if (!stroke.points) return false;
+    for (let i = 0; i < stroke.points.length - 1; i++) {
+      if (distanceToSegment(pt, stroke.points[i], stroke.points[i + 1]) <= radius) {
+        return true;
+      }
+    }
+    return false;
+  }
+  if (stroke.tool === "text" && stroke.position && stroke.text) {
+    const fontH = stroke.width * 3.5;
+    const approxW = stroke.text.length * (stroke.width * 2);
+    const x1 = stroke.position.x - radius;
+    const y1 = stroke.position.y - fontH / 2 - radius;
+    const x2 = stroke.position.x + approxW + radius;
+    const y2 = stroke.position.y + fontH / 2 + radius;
+    return pt.x >= x1 && pt.x <= x2 && pt.y >= y1 && pt.y <= y2;
+  }
+  if (stroke.start && stroke.end) {
+    if (stroke.tool === "line" || stroke.tool === "arrow") {
+      return distanceToSegment(pt, stroke.start, stroke.end) <= radius;
+    }
+    if (stroke.tool === "rectangle" || stroke.tool === "ellipse") {
+      const minX = Math.min(stroke.start.x, stroke.end.x) - radius;
+      const maxX = Math.max(stroke.start.x, stroke.end.x) + radius;
+      const minY = Math.min(stroke.start.y, stroke.end.y) - radius;
+      const maxY = Math.max(stroke.start.y, stroke.end.y) + radius;
+      return pt.x >= minX && pt.x <= maxX && pt.y >= minY && pt.y <= maxY;
+    }
+  }
+  return false;
+}
+
 interface UseDrawingOptions {
   color: string;
   lineWidth: number;
@@ -84,12 +128,51 @@ export function useDrawing({
         return;
       }
 
+      if (stroke.tool === "highlighter") {
+        if (!stroke.points || stroke.points.length < 2) return;
+        ctx.save();
+        ctx.globalAlpha = 0.45;
+        ctx.lineWidth = stroke.width * 3.5;
+        ctx.lineCap = "square";
+        ctx.lineJoin = "round";
+        ctx.beginPath();
+        ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+
+        if (stroke.points.length === 2) {
+          ctx.lineTo(stroke.points[1].x, stroke.points[1].y);
+        } else {
+          for (let i = 1; i < stroke.points.length - 1; i++) {
+            const p1 = stroke.points[i];
+            const p2 = stroke.points[i + 1];
+            const midX = (p1.x + p2.x) / 2;
+            const midY = (p1.y + p2.y) / 2;
+            ctx.quadraticCurveTo(p1.x, p1.y, midX, midY);
+          }
+          const lastPt = stroke.points[stroke.points.length - 1];
+          ctx.lineTo(lastPt.x, lastPt.y);
+        }
+        ctx.stroke();
+        ctx.restore();
+        return;
+      }
+
       if (stroke.tool === "pen") {
         if (!stroke.points || stroke.points.length < 2) return;
         ctx.beginPath();
         ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
-        for (let i = 1; i < stroke.points.length; i++) {
-          ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
+
+        if (stroke.points.length === 2) {
+          ctx.lineTo(stroke.points[1].x, stroke.points[1].y);
+        } else {
+          for (let i = 1; i < stroke.points.length - 1; i++) {
+            const p1 = stroke.points[i];
+            const p2 = stroke.points[i + 1];
+            const midX = (p1.x + p2.x) / 2;
+            const midY = (p1.y + p2.y) / 2;
+            ctx.quadraticCurveTo(p1.x, p1.y, midX, midY);
+          }
+          const lastPt = stroke.points[stroke.points.length - 1];
+          ctx.lineTo(lastPt.x, lastPt.y);
         }
         ctx.stroke();
         return;
@@ -191,8 +274,29 @@ export function useDrawing({
     const fgCanvas = fgCanvasRef.current;
     if (!fgCanvas || !enabled) return;
 
+    const eraseAtPoint = (pt: Point) => {
+      const radius = lineWidth * 3 + 12;
+      const prevLen = strokesRef.current.length;
+      strokesRef.current = strokesRef.current.filter((stroke) => !strokeHitsPoint(stroke, pt, radius));
+      if (strokesRef.current.length !== prevLen) {
+        replayStrokes(strokesRef.current);
+      }
+    };
+
+    const drawEraserPreview = (fgCtx: CanvasRenderingContext2D, pt: Point) => {
+      const radius = lineWidth * 3 + 12;
+      fgCtx.clearRect(0, 0, fgCanvas.width, fgCanvas.height);
+      fgCtx.save();
+      fgCtx.beginPath();
+      fgCtx.arc(pt.x, pt.y, radius, 0, Math.PI * 2);
+      fgCtx.strokeStyle = "#f43f5e";
+      fgCtx.lineWidth = 2;
+      fgCtx.setLineDash([4, 4]);
+      fgCtx.stroke();
+      fgCtx.restore();
+    };
+
     const onDown = (e: PointerEvent) => {
-      // Text tool is handled by Canvas.tsx click handler, not pointer drawing
       if (tool === "text") return;
 
       isDrawingRef.current = true;
@@ -204,14 +308,18 @@ export function useDrawing({
 
       fgCtx.clearRect(0, 0, fgCanvas.width, fgCanvas.height);
 
-      if (tool === "pen") {
+      if (tool === "eraser") {
+        eraseAtPoint(pt);
+        drawEraserPreview(fgCtx, pt);
+      } else if (tool === "pen" || tool === "highlighter") {
         currentPointsRef.current = [pt];
         previewStrokeRef.current = null;
         fgCtx.beginPath();
         fgCtx.strokeStyle = color;
-        fgCtx.lineWidth = lineWidth;
-        fgCtx.lineCap = "round";
+        fgCtx.lineWidth = tool === "highlighter" ? lineWidth * 3.5 : lineWidth;
+        fgCtx.lineCap = tool === "highlighter" ? "square" : "round";
         fgCtx.lineJoin = "round";
+        if (tool === "highlighter") fgCtx.globalAlpha = 0.45;
         fgCtx.moveTo(pt.x, pt.y);
       } else {
         currentPointsRef.current = [];
@@ -234,7 +342,10 @@ export function useDrawing({
       const fgCtx = getFgCtx();
       if (!fgCtx) return;
 
-      if (tool === "pen") {
+      if (tool === "eraser") {
+        eraseAtPoint(pt);
+        drawEraserPreview(fgCtx, pt);
+      } else if (tool === "pen" || tool === "highlighter") {
         currentPointsRef.current.push(pt);
         fgCtx.lineTo(pt.x, pt.y);
         fgCtx.stroke();
@@ -256,19 +367,16 @@ export function useDrawing({
       isDrawingRef.current = false;
 
       let addedStroke = false;
-      if (tool === "pen") {
+      if (tool === "pen" || tool === "highlighter") {
         const points = [...currentPointsRef.current];
         if (points.length > 1) {
           strokesRef.current = [
             ...strokesRef.current,
-            { tool: "pen", points, color, width: lineWidth },
+            { tool, points, color, width: lineWidth },
           ];
           addedStroke = true;
         }
-      } else if (
-        previewStrokeRef.current?.start &&
-        previewStrokeRef.current.end
-      ) {
+      } else if (tool !== "eraser" && previewStrokeRef.current?.start && previewStrokeRef.current.end) {
         const rect = fgCanvas.getBoundingClientRect();
         let pt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
         if (e.shiftKey) {
@@ -302,6 +410,11 @@ export function useDrawing({
       }
 
       if (addedStroke) {
+        // Ensure the last stroke has a unique ID
+        const lastIndex = strokesRef.current.length - 1;
+        if (lastIndex >= 0 && !strokesRef.current[lastIndex].id) {
+          strokesRef.current[lastIndex].id = `stroke_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        }
         // Redraw on background only once per final stroke
         replayStrokes(strokesRef.current);
       }
@@ -353,15 +466,92 @@ export function useDrawing({
   }, [getBgCtx, getFgCtx]);
 
   const addTextStroke = useCallback(
-    (text: string, position: Point, color: string, width: number) => {
+    (text: string, position: Point, color: string, width: number): string => {
+      const id = `text_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
       strokesRef.current = [
         ...strokesRef.current,
-        { tool: "text", text, position, color, width },
+        { id, tool: "text", text, position, color, width },
       ];
+      replayStrokes(strokesRef.current);
+      return id;
+    },
+    [replayStrokes],
+  );
+
+  const updateTextStroke = useCallback(
+    (id: string, text: string, position?: Point) => {
+      strokesRef.current = strokesRef.current.map((s) => {
+        if (s.id === id) {
+          return { ...s, text, ...(position ? { position } : {}) };
+        }
+        return s;
+      });
       replayStrokes(strokesRef.current);
     },
     [replayStrokes],
   );
 
-  return { bgCanvasRef, fgCanvasRef, undo, redo, clear, addTextStroke };
+  const moveTextStroke = useCallback(
+    (id: string, newPosition: Point) => {
+      strokesRef.current = strokesRef.current.map((s) => {
+        if (s.id === id) {
+          return { ...s, position: newPosition };
+        }
+        return s;
+      });
+      replayStrokes(strokesRef.current);
+    },
+    [replayStrokes],
+  );
+
+  const deleteStroke = useCallback(
+    (id: string) => {
+      strokesRef.current = strokesRef.current.filter((s) => s.id !== id);
+      replayStrokes(strokesRef.current);
+    },
+    [replayStrokes],
+  );
+
+  const findTextStrokeAt = useCallback(
+    (pt: Point): Stroke | null => {
+      const bgCtx = getBgCtx();
+      if (!bgCtx) return null;
+      for (let i = strokesRef.current.length - 1; i >= 0; i--) {
+        const stroke = strokesRef.current[i];
+        if (stroke.tool === "text" && stroke.text && stroke.position) {
+          bgCtx.font = `${stroke.width * 3}px system-ui, -apple-system, sans-serif`;
+          bgCtx.textBaseline = "middle";
+          const metrics = bgCtx.measureText(stroke.text);
+          const fontH = stroke.width * 3.5;
+          const x1 = stroke.position.x - 4;
+          const y1 = stroke.position.y - fontH / 2 - 4;
+          const x2 = stroke.position.x + metrics.width + 4;
+          const y2 = stroke.position.y + fontH / 2 + 4;
+
+          if (pt.x >= x1 && pt.x <= x2 && pt.y >= y1 && pt.y <= y2) {
+            return stroke;
+          }
+        }
+      }
+      return null;
+    },
+    [getBgCtx],
+  );
+
+  const getStrokes = useCallback(() => strokesRef.current, []);
+
+  return {
+    bgCanvasRef,
+    fgCanvasRef,
+    undo,
+    redo,
+    clear,
+    addTextStroke,
+    updateTextStroke,
+    moveTextStroke,
+    deleteStroke,
+    findTextStrokeAt,
+    getStrokes,
+    replayStrokes,
+  };
 }

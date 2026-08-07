@@ -1,8 +1,9 @@
 export interface Point { x: number; y: number; }
 
-export type Tool = "pen" | "line" | "rectangle" | "ellipse" | "arrow" | "text";
+export type Tool = "pen" | "highlighter" | "eraser" | "line" | "rectangle" | "ellipse" | "arrow" | "text";
 
 export interface Stroke {
+  id?: string;
   tool: Tool;
   color: string;   // raw CSS color e.g. "#ef4444"
   width: number;

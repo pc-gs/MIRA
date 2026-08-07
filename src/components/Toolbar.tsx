@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Tool } from "../types";
 import { PRESET_COLORS, PEN_SIZES } from "../types";
 
-const TOOLBAR_WIDTH_BASE = 540;
+const TOOLBAR_WIDTH_BASE = 600;
 const TOOLBAR_WIDTH_TOOLS_DELTA = 96;
 const TOOLBAR_WIDTH_COLORS_DELTA = 104;
 const SHAPE_TOOLS: Tool[] = ["line", "rectangle", "ellipse", "arrow", "text"];
@@ -43,8 +43,6 @@ export function Toolbar() {
 
   const applyDrawingEnabled = useCallback(async (enabled: boolean) => {
     setDrawingEnabled(enabled);
-    // Update canvas cursor style before changing passthrough, so the overlay
-    // never briefly captures events while still showing cursor: none.
     await invoke("emit_to_overlay", { event: "drawing-toggled", payload: { enabled } });
     await invoke("set_overlay_passthrough", { passThrough: !enabled });
   }, []);
@@ -73,7 +71,9 @@ export function Toolbar() {
   const handleSelectTool = useCallback(async (tool: Tool) => {
     if (!drawingEnabled) await applyDrawingEnabled(true);
     setToolsExpanded(false);
-    if (tool !== "pen") setCurrentShapeTool(tool);
+    if (tool !== "pen" && tool !== "highlighter" && tool !== "eraser") {
+      setCurrentShapeTool(tool);
+    }
     await applyTool(tool);
   }, [applyDrawingEnabled, applyTool, drawingEnabled]);
 
@@ -84,6 +84,24 @@ export function Toolbar() {
     }
     if (!drawingEnabled) await applyDrawingEnabled(true);
     await applyTool("pen");
+  }, [applyDrawingEnabled, applyTool, currentTool, drawingEnabled]);
+
+  const handleHighlighter = useCallback(async () => {
+    if (drawingEnabled && currentTool === "highlighter") {
+      await applyDrawingEnabled(false);
+      return;
+    }
+    if (!drawingEnabled) await applyDrawingEnabled(true);
+    await applyTool("highlighter");
+  }, [applyDrawingEnabled, applyTool, currentTool, drawingEnabled]);
+
+  const handleEraser = useCallback(async () => {
+    if (drawingEnabled && currentTool === "eraser") {
+      await applyDrawingEnabled(false);
+      return;
+    }
+    if (!drawingEnabled) await applyDrawingEnabled(true);
+    await applyTool("eraser");
   }, [applyDrawingEnabled, applyTool, currentTool, drawingEnabled]);
 
   const handleClear = useCallback(async () => {
@@ -206,12 +224,22 @@ export function Toolbar() {
       <Sep />
 
       {/* Pencil */}
-      <Btn active={drawingEnabled && currentTool === "pen"} disabled={!overlayVisible} onClick={() => void handlePen()} title="Pencil (⌃⇧D)">
+      <Btn active={drawingEnabled && currentTool === "pen"} disabled={!overlayVisible} onClick={() => void handlePen()} title="Caneta (⌃⇧D)">
         <PenIcon />
       </Btn>
 
+      {/* Highlighter */}
+      <Btn active={drawingEnabled && currentTool === "highlighter"} disabled={!overlayVisible} onClick={() => void handleHighlighter()} title="Marca-Texto">
+        <HighlighterIcon />
+      </Btn>
+
+      {/* Eraser */}
+      <Btn active={drawingEnabled && currentTool === "eraser"} disabled={!overlayVisible} onClick={() => void handleEraser()} title="Borracha">
+        <EraserIcon />
+      </Btn>
+
       {/* Mouse tracker */}
-      <Btn active={spotlightEnabled} disabled={!overlayVisible} onClick={() => applySpotlight(!spotlightEnabled)} title="Mouse tracker (⌃⇧S)">
+      <Btn active={spotlightEnabled} disabled={!overlayVisible} onClick={() => applySpotlight(!spotlightEnabled)} title="Spotlight / Pointer (⌃⇧S)">
         <SpotIcon />
       </Btn>
 
@@ -230,7 +258,7 @@ export function Toolbar() {
         ))}
         <button
           onClick={toggleToolsExpanded}
-          title={toolsExpanded ? "Show selected tool only" : "Show all tools"}
+          title={toolsExpanded ? "Mostrar ferramenta selecionada" : "Mostrar todas as formas"}
           className="flex-shrink-0 flex items-center justify-center w-5 h-5 rounded text-neutral-300 hover:bg-neutral-700"
         >
           <PaletteExpandIcon expanded={toolsExpanded} />
@@ -256,7 +284,7 @@ export function Toolbar() {
       </div>
       <button
         onClick={toggleColorsExpanded}
-        title={colorsExpanded ? "Show fewer colors" : "Show more colors"}
+        title={colorsExpanded ? "Mostrar menos cores" : "Mostrar mais cores"}
         className="flex-shrink-0 ml-1 flex items-center justify-center w-5 h-5 rounded text-neutral-300 hover:bg-neutral-700"
       >
         <PaletteExpandIcon expanded={colorsExpanded} />
@@ -281,19 +309,19 @@ export function Toolbar() {
       <Sep />
 
       {/* Undo / Redo / Clear */}
-      <Btn onClick={handleUndo} title="Undo (⌃⇧Z)"><UndoIcon /></Btn>
-      <Btn onClick={handleRedo} title="Redo (⌃⇧Y)"><RedoIcon /></Btn>
-      <Btn onClick={handleClear} title="Clear (⌃⇧C)"><TrashIcon /></Btn>
+      <Btn onClick={handleUndo} title="Desfazer (⌃⇧Z)"><UndoIcon /></Btn>
+      <Btn onClick={handleRedo} title="Refazer (⌃⇧Y)"><RedoIcon /></Btn>
+      <Btn onClick={handleClear} title="Limpar tudo (⌃⇧C)"><TrashIcon /></Btn>
 
       <Sep />
 
       {/* Reset toolbar position */}
-      <Btn onClick={handleResetPosition} title="Reset toolbar position"><ResetIcon /></Btn>
+      <Btn onClick={handleResetPosition} title="Resetar posição da barra"><ResetIcon /></Btn>
 
       <Sep />
 
       {/* Quit */}
-      <Btn onClick={handleQuit} title="Quit"><QuitIcon /></Btn>
+      <Btn onClick={handleQuit} title="Sair do aplicativo"><QuitIcon /></Btn>
     </div>
   );
 }
@@ -329,6 +357,8 @@ function EyeIcon({ on }: { on: boolean }) {
     : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>;
 }
 function PenIcon()   { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><circle cx="11" cy="11" r="2"/></svg>; }
+function HighlighterIcon() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m9 11-6 6v3h3l6-6"/><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"/><path d="M18 2 22 6"/></svg>; }
+function EraserIcon() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m7 21-4.3-4.3a1 1 0 0 1 0-1.4l12-12a1 1 0 0 1 1.4 0l5.6 5.6a1 1 0 0 1 0 1.4L10 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>; }
 function LineIcon()  { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="4" y1="20" x2="20" y2="4"/></svg>; }
 function RectIcon()  { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="5" y="6" width="14" height="12"/></svg>; }
 function EllipseIcon()  { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><ellipse cx="12" cy="12" rx="7" ry="5"/></svg>; }
@@ -349,6 +379,8 @@ function QuitIcon()  { return <svg width="16" height="16" viewBox="0 0 24 24" fi
 function ToolIcon({ tool }: { tool: Tool }) {
   switch (tool) {
     case "pen": return <PenIcon />;
+    case "highlighter": return <HighlighterIcon />;
+    case "eraser": return <EraserIcon />;
     case "line": return <LineIcon />;
     case "rectangle": return <RectIcon />;
     case "ellipse": return <EllipseIcon />;
