@@ -6,8 +6,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Mira is a desktop annotation overlay (draw on top of any app during presentations). The primary app is **Tauri 2 (Rust) + React 19 + TypeScript + Vite + Tailwind v4**, using **Bun** as package manager. **macOS only**: CI builds only macOS, and screen capture (zoom) is `#[cfg(target_os = "macos")]`. Keep the code Tauri-portable, but don't spend effort on Windows/Linux.
 
-The repo also contains a separate **native macOS SwiftUI/AppKit implementation** in `Mira/` + `Mira.xcodeproj`. It is independent of the Tauri app (its own `AppState`, overlay/toolbar window controllers, `ShortcutManager`) and shares no code with it. Don't assume a change in one should be mirrored in the other unless asked.
-
 ## Commands
 
 ```bash
