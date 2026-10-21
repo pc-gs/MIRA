@@ -50,7 +50,13 @@ jobs:
         run: bun install
 
       - name: Build Tauri app
-        run: bun run tauri build
+        # Sign only when the Apple secrets are configured. Unset secrets arrive as
+        # empty strings, which makes tauri attempt (and fail) a certificate import.
+        run: |
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!v}" ]; then unset "$v"; fi
+          done
+          bun run tauri build
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
