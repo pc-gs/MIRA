@@ -1,7 +1,7 @@
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf, thread, time::Duration};
+use std::{collections::HashSet, fs, path::PathBuf, sync::Mutex, thread, time::Duration};
 
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{NSWindow, NSStatusWindowLevel};
@@ -11,7 +11,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 
 const TOOLBAR_POSITION_FILE: &str = "toolbar-position.json";
-const TOOLBAR_LOGICAL_WIDTH_DEFAULT: f64 = 596.0;
+const TOOLBAR_LOGICAL_WIDTH_DEFAULT: f64 = 660.0;
 const TOOLBAR_LOGICAL_HEIGHT: f64 = 60.0;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -24,6 +24,12 @@ struct ToolbarPosition {
 struct CursorMovedPayload {
     x: f64,
     y: f64,
+}
+
+/// Overlay labels that were hidden before zoom and must be hidden again on exit.
+#[derive(Default)]
+struct ZoomState {
+    shown_for_zoom: Mutex<HashSet<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +112,77 @@ fn reset_toolbar_position(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Capture the calling overlay's monitor and make the overlay interactive for zooming.
+/// Returns `[width u32 LE][height u32 LE][RGBA pixels]`.
+#[tauri::command]
+async fn begin_zoom(
+    window: WebviewWindow,
+    state: tauri::State<'_, ZoomState>,
+) -> Result<tauri::ipc::Response, String> {
+    let (width, height, pixels) = capture_window_monitor(&window)?;
+
+    if !window.is_visible().unwrap_or(true) {
+        state
+            .shown_for_zoom
+            .lock()
+            .map_err(|e| e.to_string())?
+            .insert(window.label().to_string());
+        window.show().map_err(|e| e.to_string())?;
+    }
+    window
+        .set_ignore_cursor_events(false)
+        .map_err(|e| e.to_string())?;
+    let _ = window.set_focus();
+
+    let mut bytes = Vec::with_capacity(8 + pixels.len());
+    bytes.extend_from_slice(&width.to_le_bytes());
+    bytes.extend_from_slice(&height.to_le_bytes());
+    bytes.extend_from_slice(&pixels);
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[tauri::command]
+fn end_zoom(
+    window: WebviewWindow,
+    state: tauri::State<'_, ZoomState>,
+    pass_through: bool,
+) -> Result<(), String> {
+    window
+        .set_ignore_cursor_events(pass_through)
+        .map_err(|e| e.to_string())?;
+    let was_hidden = state
+        .shown_for_zoom
+        .lock()
+        .map_err(|e| e.to_string())?
+        .remove(window.label());
+    if was_hidden {
+        window.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn capture_window_monitor(window: &WebviewWindow) -> Result<(u32, u32, Vec<u8>), String> {
+    let monitor = window
+        .current_monitor()
+        .map_err(|e| e.to_string())?
+        .ok_or("no monitor for overlay")?;
+    // xcap works in CoreGraphics points; Tauri reports physical pixels.
+    let scale = monitor.scale_factor();
+    let cx = (monitor.position().x as f64 + monitor.size().width as f64 / 2.0) / scale;
+    let cy = (monitor.position().y as f64 + monitor.size().height as f64 / 2.0) / scale;
+    let target = xcap::Monitor::from_point(cx as i32, cy as i32).map_err(|e| e.to_string())?;
+    let image = target.capture_image().map_err(|e| {
+        format!("Screen capture failed. Allow Screen Recording for Mira in System Settings. ({e})")
+    })?;
+    Ok((image.width(), image.height(), image.into_raw()))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn capture_window_monitor(_window: &WebviewWindow) -> Result<(u32, u32, Vec<u8>), String> {
+    Err("Zoom is only available on macOS".to_string())
+}
+
 #[tauri::command]
 fn quit_app(app: AppHandle) {
     app.exit(0);
@@ -185,7 +262,10 @@ pub fn run() {
             quit_app,
             set_toolbar_width,
             set_toolbar_size,
+            begin_zoom,
+            end_zoom,
         ])
+        .manage(ZoomState::default())
         .setup(|app| {
             setup_windows(app)?;
             if let Err(e) = register_shortcuts(app) {
@@ -289,6 +369,8 @@ fn register_shortcuts(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Er
         Shortcut::new(ctrl_shift, Code::KeyY), // redo
         Shortcut::new(ctrl_shift, Code::KeyS), // spotlight
         Shortcut::new(ctrl_shift, Code::KeyD), // toggle draw mode
+        Shortcut::new(ctrl_shift, Code::KeyL), // laser pointer
+        Shortcut::new(ctrl_shift, Code::KeyM), // zoom
     ])?;
     Ok(())
 }
@@ -335,6 +417,15 @@ fn handle_shortcut(app: &AppHandle, shortcut: &Shortcut) {
         }
         Code::KeyD => {
             let _ = app.emit_to("toolbar", "shortcut-draw-toggle", ());
+        }
+        Code::KeyL => {
+            let _ = app.emit_to("toolbar", "shortcut-laser", ());
+        }
+        Code::KeyM => {
+            // Each overlay decides whether the cursor is on its monitor
+            for label in overlay_labels(app) {
+                let _ = app.emit_to(&label, "zoom-toggle", ());
+            }
         }
         _ => {}
     }

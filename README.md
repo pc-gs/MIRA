@@ -15,11 +15,15 @@ If this is useful for your workflow, feel free to use it, adapt it, and contribu
 - Opens a transparent, always-on-top drawing overlay
 - Provides a floating, low-profile draggable toolbar
 - Pen, highlighter, eraser, and shapes (line, rectangle, ellipse, arrow)
+- Highlighter that behaves like a real marker: yellow by default, uniform color where strokes overlap, sits under pen ink, `Shift` for straight lines
+- ZoomIt-style zoom: freeze the screen, magnify around the cursor, scroll to change level, draw on the zoomed view
+- Laser pointer with a fading trail (clicks still go to the app underneath)
 - Text annotations (click to place, click again to edit or drag)
 - Color and stroke controls
 - Undo / redo / clear (eraser and clear are fully undoable)
 - Spotlight pointer for live presentations
 - Multi-monitor overlays
+- macOS only (built with Tauri; Windows/Linux are not maintained)
 - Reliable global shortcuts (no fake settings UI)
 
 ## Why This Exists
@@ -80,8 +84,12 @@ mira/
 | `Ctrl+Shift+Z` | Undo |
 | `Ctrl+Shift+Y` | Redo |
 | `Ctrl+Shift+S` | Toggle spotlight |
+| `Ctrl+Shift+L` | Toggle laser pointer |
+| `Ctrl+Shift+M` | Zoom in/out (scroll = level, drag = draw, `Esc`/right-click = exit) |
+| `Esc` (overlay focused) | Leave draw mode |
 
 On macOS, grant Accessibility permissions in System Settings for global shortcuts.
+Zoom needs **Screen Recording** permission (System Settings → Privacy & Security → Screen Recording). If the zoomed view shows only your wallpaper, that permission is missing.
 
 ## Getting Started
 

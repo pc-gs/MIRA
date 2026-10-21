@@ -2,11 +2,11 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { Tool } from "../types";
-import { PRESET_COLORS, PEN_SIZES } from "../types";
+import type { Tool, PointerMode } from "../types";
+import { PRESET_COLORS, PEN_SIZES, DEFAULT_HIGHLIGHTER_COLOR } from "../types";
 
 // Compact, presentation-friendly widths (no fake modals / extra chrome)
-const TOOLBAR_WIDTH_BASE = 596;
+const TOOLBAR_WIDTH_BASE = 660;
 const TOOLBAR_WIDTH_TOOLS_DELTA = 96;
 const TOOLBAR_WIDTH_COLORS_DELTA = 104;
 const SHAPE_TOOLS: Tool[] = ["line", "rectangle", "ellipse", "arrow", "text"];
@@ -17,15 +17,22 @@ export function Toolbar() {
   const [currentTool, setCurrentTool] = useState<Tool>("pen");
   const [currentShapeTool, setCurrentShapeTool] = useState<Tool>("line");
   const [toolsExpanded, setToolsExpanded] = useState(false);
-  const [spotlightEnabled, setSpotlightEnabled] = useState(false);
-  const [currentColor, setCurrentColor] = useState<string>(PRESET_COLORS[0]);
+  const [pointerMode, setPointerMode] = useState<PointerMode>("off");
+  // Highlighter keeps its own color so switching tools doesn't turn it white
+  const [penColor, setPenColor] = useState<string>(PRESET_COLORS[0]);
+  const [highlighterColor, setHighlighterColor] = useState<string>(DEFAULT_HIGHLIGHTER_COLOR);
+  const currentColor = currentTool === "highlighter" ? highlighterColor : penColor;
   const [currentSize, setCurrentSize] = useState<number>(6);
   const [colorsExpanded, setColorsExpanded] = useState(false);
 
   // Refs so shortcut listeners always see latest state without re-subscribing
   const overlayVisibleRef = useRef(overlayVisible);
   const drawingEnabledRef = useRef(drawingEnabled);
-  const spotlightEnabledRef = useRef(spotlightEnabled);
+  const pointerModeRef = useRef(pointerMode);
+  const currentToolRef = useRef(currentTool);
+  currentToolRef.current = currentTool;
+  const colorsRef = useRef({ penColor, highlighterColor });
+  colorsRef.current = { penColor, highlighterColor };
   useEffect(() => {
     overlayVisibleRef.current = overlayVisible;
   }, [overlayVisible]);
@@ -33,8 +40,8 @@ export function Toolbar() {
     drawingEnabledRef.current = drawingEnabled;
   }, [drawingEnabled]);
   useEffect(() => {
-    spotlightEnabledRef.current = spotlightEnabled;
-  }, [spotlightEnabled]);
+    pointerModeRef.current = pointerMode;
+  }, [pointerMode]);
 
   const applyOverlayVisible = useCallback(async (visible: boolean) => {
     setOverlayVisible(visible);
@@ -52,7 +59,8 @@ export function Toolbar() {
   }, []);
 
   const applyColor = useCallback(async (color: string) => {
-    setCurrentColor(color);
+    if (currentToolRef.current === "highlighter") setHighlighterColor(color);
+    else setPenColor(color);
     setColorsExpanded(false);
     await invoke("emit_to_overlay", { event: "color-changed", payload: { color } });
   }, []);
@@ -62,18 +70,35 @@ export function Toolbar() {
     await invoke("emit_to_overlay", { event: "size-changed", payload: { size } });
   }, []);
 
-  const applySpotlight = useCallback(async (enabled: boolean) => {
-    setSpotlightEnabled(enabled);
-    await invoke("emit_to_overlay", { event: "spotlight-toggled", payload: { enabled } });
-  }, []);
+  const applyPointerMode = useCallback(
+    async (mode: PointerMode) => {
+      setPointerMode(mode);
+      pointerModeRef.current = mode;
+      // Laser is for pointing at other apps, so clicks must pass through
+      if (mode === "laser" && drawingEnabledRef.current) await applyDrawingEnabled(false);
+      await invoke("emit_to_overlay", { event: "pointer-mode-changed", payload: { mode } });
+    },
+    [applyDrawingEnabled],
+  );
+
+  const togglePointerMode = useCallback(
+    (mode: PointerMode) => applyPointerMode(pointerModeRef.current === mode ? "off" : mode),
+    [applyPointerMode],
+  );
 
   const applyTool = useCallback(async (tool: Tool) => {
     setCurrentTool(tool);
     await invoke("emit_to_overlay", { event: "tool-changed", payload: { tool } });
+    const { penColor: pen, highlighterColor: hl } = colorsRef.current;
+    await invoke("emit_to_overlay", {
+      event: "color-changed",
+      payload: { color: tool === "highlighter" ? hl : pen },
+    });
   }, []);
 
   const enableAndSelect = useCallback(
     async (tool: Tool) => {
+      if (pointerModeRef.current === "laser") await applyPointerMode("off");
       if (!drawingEnabled) await applyDrawingEnabled(true);
       if (tool !== "pen" && tool !== "highlighter" && tool !== "eraser") {
         setCurrentShapeTool(tool);
@@ -81,7 +106,7 @@ export function Toolbar() {
       setToolsExpanded(false);
       await applyTool(tool);
     },
-    [applyDrawingEnabled, applyTool, drawingEnabled],
+    [applyDrawingEnabled, applyPointerMode, applyTool, drawingEnabled],
   );
 
   /** Toggle a primary tool off (back to click-through) if already selected. */
@@ -106,6 +131,10 @@ export function Toolbar() {
 
   const handleRedo = useCallback(async () => {
     await invoke("emit_to_overlay", { event: "shortcut-redo", payload: null });
+  }, []);
+
+  const handleZoom = useCallback(async () => {
+    await invoke("emit_to_overlay", { event: "zoom-toggle", payload: null });
   }, []);
 
   const handleResetPosition = useCallback(async () => {
@@ -133,8 +162,8 @@ export function Toolbar() {
       void invoke("emit_to_overlay", { event: "color-changed", payload: { color: currentColor } });
       void invoke("emit_to_overlay", { event: "size-changed", payload: { size: currentSize } });
       void invoke("emit_to_overlay", {
-        event: "spotlight-toggled",
-        payload: { enabled: spotlightEnabledRef.current },
+        event: "pointer-mode-changed",
+        payload: { mode: pointerModeRef.current },
       });
     });
     return () => {
@@ -151,19 +180,24 @@ export function Toolbar() {
           applyOverlayVisible(!overlayVisibleRef.current),
         ),
       );
+      subs.push(await listen("shortcut-spotlight", () => togglePointerMode("spotlight")));
+      subs.push(await listen("shortcut-laser", () => togglePointerMode("laser")));
       subs.push(
-        await listen("shortcut-spotlight", () =>
-          applySpotlight(!spotlightEnabledRef.current),
-        ),
+        await listen("shortcut-draw-toggle", () => {
+          if (!drawingEnabledRef.current && pointerModeRef.current === "laser") {
+            void applyPointerMode("off");
+          }
+          void applyDrawingEnabled(!drawingEnabledRef.current);
+        }),
       );
       subs.push(
-        await listen("shortcut-draw-toggle", () =>
-          applyDrawingEnabled(!drawingEnabledRef.current),
-        ),
+        await listen("overlay-escape", () => {
+          if (drawingEnabledRef.current) void applyDrawingEnabled(false);
+        }),
       );
     })();
     return () => subs.forEach((fn) => fn());
-  }, [applyOverlayVisible, applyDrawingEnabled, applySpotlight]);
+  }, [applyOverlayVisible, applyDrawingEnabled, applyPointerMode, togglePointerMode]);
 
   // Persist toolbar drag position
   useEffect(() => {
@@ -251,12 +285,25 @@ export function Toolbar() {
       </Btn>
 
       <Btn
-        active={spotlightEnabled}
+        active={pointerMode === "laser"}
         disabled={!overlayVisible}
-        onClick={() => applySpotlight(!spotlightEnabled)}
+        onClick={() => void togglePointerMode("laser")}
+        title="Laser pointer (⌃⇧L)"
+      >
+        <LaserIcon />
+      </Btn>
+
+      <Btn
+        active={pointerMode === "spotlight"}
+        disabled={!overlayVisible}
+        onClick={() => void togglePointerMode("spotlight")}
         title="Spotlight (⌃⇧S)"
       >
         <SpotIcon />
+      </Btn>
+
+      <Btn onClick={() => void handleZoom()} title="Zoom (⌃⇧M) — scroll to change level, Esc to exit">
+        <ZoomIcon />
       </Btn>
 
       <div className="flex items-center gap-0.5 ml-0.5">
@@ -481,6 +528,27 @@ function SpotIcon() {
       <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
       <line x1="1" y1="12" x2="3" y2="12" />
       <line x1="21" y1="12" x2="23" y2="12" />
+    </svg>
+  );
+}
+
+function LaserIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="17" cy="7" r="3" fill="currentColor" />
+      <path d="M3 21l8-8" opacity="0.5" />
+      <path d="M8 18l4-4" opacity="0.8" />
+    </svg>
+  );
+}
+
+function ZoomIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="11" cy="11" r="7" />
+      <line x1="21" y1="21" x2="16" y2="16" />
+      <line x1="11" y1="8" x2="11" y2="14" />
+      <line x1="8" y1="11" x2="14" y2="11" />
     </svg>
   );
 }

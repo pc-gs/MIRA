@@ -1,9 +1,15 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { listen, emit } from "@tauri-apps/api/event";
-import { useDrawing } from "../hooks/useDrawing";
+import { useDrawing, HIGHLIGHTER_ALPHA } from "../hooks/useDrawing";
+import { useCursorStream, isInsideWindow } from "../hooks/useCursorStream";
 import { Spotlight } from "./Spotlight";
+import { LaserPointer } from "./LaserPointer";
+import { ZoomView } from "./ZoomView";
 import { TextInput } from "./TextInput";
-import type { Tool, Point, Stroke } from "../types";
+import type { Tool, Point, Stroke, PointerMode } from "../types";
+
+// Classic red laser: stays visible on light and dark slides regardless of pen color
+const LASER_COLOR = "#ff2d2d";
 
 interface ActiveTextInput {
   id?: string;
@@ -30,14 +36,22 @@ export function Canvas() {
   const [tool, setTool] = useState<Tool>("pen");
   const [color, setColor] = useState("#ffffff");
   const [lineWidth, setLineWidth] = useState(6);
-  const [spotlightEnabled, setSpotlightEnabled] = useState(false);
-  const [cursor, setCursor] = useState({ x: 0, y: 0 });
+  const [pointerMode, setPointerMode] = useState<PointerMode>("off");
   const [textInput, setTextInput] = useState<ActiveTextInput | null>(null);
   const [hoverText, setHoverText] = useState(false);
+  const [zoomActive, setZoomActive] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const textDragRef = useRef<TextDrag | null>(null);
+  const cursor = useCursorStream();
+
+  const drawingEnabledRef = useRef(drawingEnabled);
+  drawingEnabledRef.current = drawingEnabled;
+  const zoomActiveRef = useRef(zoomActive);
+  zoomActiveRef.current = zoomActive;
 
   const {
+    hlCanvasRef,
     bgCanvasRef,
     fgCanvasRef,
     undo,
@@ -54,7 +68,7 @@ export function Canvas() {
   } = useDrawing({
     color,
     lineWidth,
-    enabled: drawingEnabled && !textInput,
+    enabled: drawingEnabled && !textInput && !zoomActive,
     tool,
   });
 
@@ -91,7 +105,7 @@ export function Canvas() {
 
   // Text tool: create / edit / drag. Other tools leave drawing to useDrawing.
   const handlePointerDown = (e: React.PointerEvent) => {
-    if (!drawingEnabled || tool !== "text" || textInput) return;
+    if (!drawingEnabled || tool !== "text" || textInput || zoomActive) return;
 
     const pt = pointFromEvent(e);
     const hit = findTextStrokeAt(pt);
@@ -113,7 +127,7 @@ export function Canvas() {
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
-    if (!drawingEnabled) {
+    if (!drawingEnabled || zoomActive) {
       if (hoverText) setHoverText(false);
       return;
     }
@@ -140,7 +154,7 @@ export function Canvas() {
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
-    if (!drawingEnabled || tool !== "text") return;
+    if (!drawingEnabled || tool !== "text" || zoomActive) return;
 
     const pt = pointFromEvent(e);
 
@@ -182,13 +196,18 @@ export function Canvas() {
     }
   };
 
-  // Local undo when the overlay has focus (global shortcuts also fire via Rust)
+  // Local keys when the overlay has focus (global shortcuts also fire via Rust)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (document.activeElement as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (zoomActiveRef.current) return; // ZoomView handles its own keys
 
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+      if (e.key === "Escape" && drawingEnabledRef.current) {
+        // Toolbar owns draw mode; ask it to switch back to click-through
+        e.preventDefault();
+        void emit("overlay-escape");
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
         e.preventDefault();
         if (e.shiftKey) redo();
         else undo();
@@ -220,8 +239,19 @@ export function Canvas() {
       await add<{ tool: Tool }>("tool-changed", (p) => setTool(p.tool));
       await add<{ color: string }>("color-changed", (p) => setColor(p.color));
       await add<{ size: number }>("size-changed", (p) => setLineWidth(p.size));
-      await add<{ enabled: boolean }>("spotlight-toggled", (p) => setSpotlightEnabled(p.enabled));
-      await add<{ x: number; y: number }>("cursor-moved", (p) => setCursor({ x: p.x, y: p.y }));
+      await add<{ mode: PointerMode }>("pointer-mode-changed", (p) => setPointerMode(p.mode));
+      await add<null>("zoom-toggle", () => {
+        if (zoomActiveRef.current) {
+          setZoomActive(false);
+          return;
+        }
+        // Only the overlay on the cursor's monitor zooms
+        const pos = cursor.get();
+        if (pos && isInsideWindow(pos)) {
+          setTextInput(null);
+          setZoomActive(true);
+        }
+      });
 
       const uClear = await listen("shortcut-clear", () => clear());
       const uUndo = await listen("shortcut-undo", () => undo());
@@ -239,7 +269,20 @@ export function Canvas() {
       cancelled = true;
       subs.forEach((fn) => fn());
     };
-  }, [clear, undo, redo]);
+  }, [clear, undo, redo, cursor]);
+
+  const exitZoom = useCallback(() => setZoomActive(false), []);
+  const getPassThrough = useCallback(() => !drawingEnabledRef.current, []);
+  const handleZoomError = useCallback((message: string) => {
+    setZoomActive(false);
+    setNotice(message);
+  }, []);
+
+  useEffect(() => {
+    if (!notice) return;
+    const id = setTimeout(() => setNotice(null), 4000);
+    return () => clearTimeout(id);
+  }, [notice]);
 
   const cursorStyle = !drawingEnabled
     ? "default"
@@ -260,6 +303,11 @@ export function Canvas() {
       onPointerUp={handlePointerUp}
     >
       <canvas
+        ref={hlCanvasRef}
+        className="absolute inset-0 w-full h-full pointer-events-none"
+        style={{ opacity: HIGHLIGHTER_ALPHA }}
+      />
+      <canvas
         ref={bgCanvasRef}
         className="absolute inset-0 w-full h-full pointer-events-none"
       />
@@ -272,7 +320,23 @@ export function Canvas() {
           pointerEvents: tool === "text" ? "none" : "auto",
         }}
       />
-      {spotlightEnabled && <Spotlight x={cursor.x} y={cursor.y} />}
+      {pointerMode === "spotlight" && <Spotlight cursor={cursor} />}
+      {pointerMode === "laser" && !zoomActive && <LaserPointer cursor={cursor} color={LASER_COLOR} />}
+      {zoomActive && (
+        <ZoomView
+          initialCursor={cursor.get()}
+          color={color}
+          lineWidth={lineWidth}
+          getPassThrough={getPassThrough}
+          onExit={exitZoom}
+          onError={handleZoomError}
+        />
+      )}
+      {notice && (
+        <div className="pointer-events-none fixed top-6 left-1/2 -translate-x-1/2 max-w-md px-4 py-2 rounded-lg bg-neutral-900/90 text-white text-sm shadow-xl">
+          {notice}
+        </div>
+      )}
       {textInput && (
         <TextInput
           x={textInput.x}
