@@ -1,14 +1,14 @@
 {
   "name": "mira",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Mira: lightweight screen annotation overlay for live presentations",
   "author": "Pedro Santos",
   "repository": {
     "type": "git",
-    "url": "https://github.com/p-c-g-s/MIRA.git"
+    "url": "https://github.com/pc-gs/MIRA.git"
   },
-  "homepage": "https://github.com/p-c-g-s/MIRA",
+  "homepage": "https://github.com/pc-gs/MIRA",
   "type": "module",
   "scripts": {
     "dev": "vite",

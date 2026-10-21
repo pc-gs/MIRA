@@ -3,8 +3,8 @@ name = "Mira"
 version = "0.2.0"
 description = "Mira: lightweight screen annotation overlay for live presentations"
 authors = ["Pedro Santos"]
-homepage = "https://github.com/p-c-g-s/MIRA"
-repository = "https://github.com/p-c-g-s/MIRA"
+homepage = "https://github.com/pc-gs/MIRA"
+repository = "https://github.com/pc-gs/MIRA"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
