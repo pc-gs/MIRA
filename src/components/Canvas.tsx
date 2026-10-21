@@ -37,6 +37,7 @@ export function Canvas() {
   const [color, setColor] = useState("#ffffff");
   const [lineWidth, setLineWidth] = useState(6);
   const [pointerMode, setPointerMode] = useState<PointerMode>("off");
+  const [fadeEnabled, setFadeEnabled] = useState(false);
   const [textInput, setTextInput] = useState<ActiveTextInput | null>(null);
   const [hoverText, setHoverText] = useState(false);
   const [zoomActive, setZoomActive] = useState(false);
@@ -70,6 +71,7 @@ export function Canvas() {
     lineWidth,
     enabled: drawingEnabled && !textInput && !zoomActive,
     tool,
+    fade: fadeEnabled,
   });
 
   // While editing, hide the underlying stroke so the input is the only visible text
@@ -240,6 +242,7 @@ export function Canvas() {
       await add<{ color: string }>("color-changed", (p) => setColor(p.color));
       await add<{ size: number }>("size-changed", (p) => setLineWidth(p.size));
       await add<{ mode: PointerMode }>("pointer-mode-changed", (p) => setPointerMode(p.mode));
+      await add<{ enabled: boolean }>("fade-mode-changed", (p) => setFadeEnabled(p.enabled));
       await add<null>("zoom-toggle", () => {
         if (zoomActiveRef.current) {
           setZoomActive(false);

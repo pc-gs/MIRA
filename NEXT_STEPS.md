@@ -24,6 +24,8 @@ Status: implemented, pending testing on macOS.
 - **Zoom (ZoomIt-style)** — `Ctrl+Shift+M` freezes the current monitor and magnifies around the cursor; scroll changes level, drag draws temporary ink, Esc/right-click exits.
 - **Laser pointer** — `Ctrl+Shift+L`, red dot with fading trail; overlay stays click-through.
 - **Highlighter rework** — own layer (no darkening on overlap, under pen ink), yellow default with its own color, `Shift` for straight lines, eraser accounts for stroke width.
+- **Fading ink** — `Ctrl+Shift+F`, strokes vanish after ~3 s without touching undo history.
+- **Daily-use polish** — toolbar hidden from screen sharing, menu bar icon, Open at Login, `Ctrl+Shift+H` to hide the toolbar.
 - **Performance** — cursor updates no longer re-render the overlay.
 - **Platform** — macOS only; Windows/Linux removed from CI.
 

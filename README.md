@@ -18,6 +18,9 @@ If this is useful for your workflow, feel free to use it, adapt it, and contribu
 - Highlighter that behaves like a real marker: yellow by default, uniform color where strokes overlap, sits under pen ink, `Shift` for straight lines
 - ZoomIt-style zoom: freeze the screen, magnify around the cursor, scroll to change level, draw on the zoomed view
 - Laser pointer with a fading trail (clicks still go to the app underneath)
+- Fading ink: annotations disappear on their own after a few seconds (great for standups)
+- Toolbar is hidden from screen sharing — your audience sees the annotations, not the controls
+- Menu bar icon with all actions and an "Open at Login" option
 - Text annotations (click to place, click again to edit or drag)
 - Color and stroke controls
 - Undo / redo / clear (eraser and clear are fully undoable)
@@ -86,9 +89,12 @@ mira/
 | `Ctrl+Shift+S` | Toggle spotlight |
 | `Ctrl+Shift+L` | Toggle laser pointer |
 | `Ctrl+Shift+M` | Zoom in/out (scroll = level, drag = draw, `Esc`/right-click = exit) |
+| `Ctrl+Shift+F` | Toggle fading ink |
+| `Ctrl+Shift+H` | Show/hide toolbar |
 | `Esc` (overlay focused) | Leave draw mode |
 
 On macOS, grant Accessibility permissions in System Settings for global shortcuts.
+Annotations only reach a video call when you share the **entire screen** (sharing a single window doesn't include Mira's overlay).
 Zoom needs **Screen Recording** permission (System Settings → Privacy & Security → Screen Recording). If the zoomed view shows only your wallpaper, that permission is missing.
 
 ## Getting Started

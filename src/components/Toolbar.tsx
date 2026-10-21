@@ -6,7 +6,7 @@ import type { Tool, PointerMode } from "../types";
 import { PRESET_COLORS, PEN_SIZES, DEFAULT_HIGHLIGHTER_COLOR } from "../types";
 
 // Compact, presentation-friendly widths (no fake modals / extra chrome)
-const TOOLBAR_WIDTH_BASE = 660;
+const TOOLBAR_WIDTH_BASE = 692;
 const TOOLBAR_WIDTH_TOOLS_DELTA = 96;
 const TOOLBAR_WIDTH_COLORS_DELTA = 104;
 const SHAPE_TOOLS: Tool[] = ["line", "rectangle", "ellipse", "arrow", "text"];
@@ -18,6 +18,7 @@ export function Toolbar() {
   const [currentShapeTool, setCurrentShapeTool] = useState<Tool>("line");
   const [toolsExpanded, setToolsExpanded] = useState(false);
   const [pointerMode, setPointerMode] = useState<PointerMode>("off");
+  const [fadeEnabled, setFadeEnabled] = useState(false);
   // Highlighter keeps its own color so switching tools doesn't turn it white
   const [penColor, setPenColor] = useState<string>(PRESET_COLORS[0]);
   const [highlighterColor, setHighlighterColor] = useState<string>(DEFAULT_HIGHLIGHTER_COLOR);
@@ -29,6 +30,8 @@ export function Toolbar() {
   const overlayVisibleRef = useRef(overlayVisible);
   const drawingEnabledRef = useRef(drawingEnabled);
   const pointerModeRef = useRef(pointerMode);
+  const fadeEnabledRef = useRef(fadeEnabled);
+  fadeEnabledRef.current = fadeEnabled;
   const currentToolRef = useRef(currentTool);
   currentToolRef.current = currentTool;
   const colorsRef = useRef({ penColor, highlighterColor });
@@ -80,6 +83,12 @@ export function Toolbar() {
     },
     [applyDrawingEnabled],
   );
+
+  const applyFade = useCallback(async (enabled: boolean) => {
+    setFadeEnabled(enabled);
+    fadeEnabledRef.current = enabled;
+    await invoke("emit_to_overlay", { event: "fade-mode-changed", payload: { enabled } });
+  }, []);
 
   const togglePointerMode = useCallback(
     (mode: PointerMode) => applyPointerMode(pointerModeRef.current === mode ? "off" : mode),
@@ -165,6 +174,10 @@ export function Toolbar() {
         event: "pointer-mode-changed",
         payload: { mode: pointerModeRef.current },
       });
+      void invoke("emit_to_overlay", {
+        event: "fade-mode-changed",
+        payload: { enabled: fadeEnabledRef.current },
+      });
     });
     return () => {
       unlisten.then((fn) => fn()).catch(console.error);
@@ -182,6 +195,7 @@ export function Toolbar() {
       );
       subs.push(await listen("shortcut-spotlight", () => togglePointerMode("spotlight")));
       subs.push(await listen("shortcut-laser", () => togglePointerMode("laser")));
+      subs.push(await listen("shortcut-fade", () => applyFade(!fadeEnabledRef.current)));
       subs.push(
         await listen("shortcut-draw-toggle", () => {
           if (!drawingEnabledRef.current && pointerModeRef.current === "laser") {
@@ -197,7 +211,7 @@ export function Toolbar() {
       );
     })();
     return () => subs.forEach((fn) => fn());
-  }, [applyOverlayVisible, applyDrawingEnabled, applyPointerMode, togglePointerMode]);
+  }, [applyOverlayVisible, applyDrawingEnabled, applyPointerMode, togglePointerMode, applyFade]);
 
   // Persist toolbar drag position
   useEffect(() => {
@@ -300,6 +314,15 @@ export function Toolbar() {
         title="Spotlight (⌃⇧S)"
       >
         <SpotIcon />
+      </Btn>
+
+      <Btn
+        active={fadeEnabled}
+        disabled={!overlayVisible}
+        onClick={() => void applyFade(!fadeEnabled)}
+        title="Fading ink (⌃⇧F) — new strokes disappear after a few seconds"
+      >
+        <FadeIcon />
       </Btn>
 
       <Btn onClick={() => void handleZoom()} title="Zoom (⌃⇧M) — scroll to change level, Esc to exit">
@@ -538,6 +561,16 @@ function LaserIcon() {
       <circle cx="17" cy="7" r="3" fill="currentColor" />
       <path d="M3 21l8-8" opacity="0.5" />
       <path d="M8 18l4-4" opacity="0.8" />
+    </svg>
+  );
+}
+
+function FadeIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M3 17c3-6 6-6 8-2" />
+      <path d="M14 13c1.5-2 3-2.5 4-1.5" opacity="0.55" />
+      <path d="M20.5 10.5l.5-.5" opacity="0.3" />
     </svg>
   );
 }

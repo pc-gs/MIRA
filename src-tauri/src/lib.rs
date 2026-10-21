@@ -1,17 +1,20 @@
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, fs, path::PathBuf, sync::Mutex, thread, time::Duration};
 
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSWindow, NSStatusWindowLevel};
+use objc2_app_kit::{NSStatusWindowLevel, NSWindow, NSWindowSharingType};
 #[cfg(target_os = "macos")]
 use objc2::rc::Retained;
 #[cfg(target_os = "macos")]
 use objc2::runtime::AnyObject;
 
 const TOOLBAR_POSITION_FILE: &str = "toolbar-position.json";
-const TOOLBAR_LOGICAL_WIDTH_DEFAULT: f64 = 660.0;
+const TOOLBAR_LOGICAL_WIDTH_DEFAULT: f64 = 692.0;
 const TOOLBAR_LOGICAL_HEIGHT: f64 = 60.0;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -244,6 +247,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .macos_launcher(MacosLauncher::LaunchAgent)
+                .build(),
+        )
+        .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
                     if event.state() != ShortcutState::Pressed {
@@ -268,6 +276,9 @@ pub fn run() {
         .manage(ZoomState::default())
         .setup(|app| {
             setup_windows(app)?;
+            if let Err(e) = setup_tray(app) {
+                eprintln!("Menu bar icon unavailable: {e}");
+            }
             if let Err(e) = register_shortcuts(app) {
                 eprintln!("Global shortcuts unavailable (grant Accessibility permission): {e}");
             }
@@ -331,15 +342,8 @@ fn setup_windows(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
 
     start_cursor_polling(app.handle().clone(), overlays);
 
-    // Set toolbar to a higher window level on macOS to stay above overlays
-    #[cfg(target_os = "macos")]
-    {
-        let ns_window = toolbar.ns_window()? as *mut AnyObject;
-        let ns_window: Option<Retained<NSWindow>> = unsafe { Retained::retain(ns_window.cast()) };
-        if let Some(ns_window) = ns_window {
-            ns_window.setLevel(NSStatusWindowLevel);
-        }
-    }
+    // Keep the toolbar above overlays and out of screen sharing / zoom captures
+    apply_toolbar_window_style(&toolbar);
 
     // Position toolbar top-center inside monitor work area by default.
     let toolbar_phys_w = (TOOLBAR_LOGICAL_WIDTH_DEFAULT * scale) as i32;
@@ -371,25 +375,139 @@ fn register_shortcuts(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Er
         Shortcut::new(ctrl_shift, Code::KeyD), // toggle draw mode
         Shortcut::new(ctrl_shift, Code::KeyL), // laser pointer
         Shortcut::new(ctrl_shift, Code::KeyM), // zoom
+        Shortcut::new(ctrl_shift, Code::KeyH), // show/hide toolbar
+        Shortcut::new(ctrl_shift, Code::KeyF), // fading ink
     ])?;
     Ok(())
 }
 
-fn raise_toolbar(app: &AppHandle) {
-    if let Some(toolbar) = app.get_webview_window("toolbar") {
-        #[cfg(target_os = "macos")]
-        {
-            if let Ok(ns_window) = toolbar.ns_window() {
-                let ns_window = ns_window as *mut AnyObject;
-                let ns_window: Option<Retained<NSWindow>> = unsafe { Retained::retain(ns_window.cast()) };
-                if let Some(ns_window) = ns_window {
-                    ns_window.setLevel(NSStatusWindowLevel);
-                }
+/// macOS: status window level (above overlays) and excluded from screen capture,
+/// so the audience in a screen share — and the zoom snapshot — never sees the toolbar.
+fn apply_toolbar_window_style(toolbar: &WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(ns_window) = toolbar.ns_window() {
+            let ns_window = ns_window as *mut AnyObject;
+            let ns_window: Option<Retained<NSWindow>> = unsafe { Retained::retain(ns_window.cast()) };
+            if let Some(ns_window) = ns_window {
+                ns_window.setLevel(NSStatusWindowLevel);
+                ns_window.setSharingType(NSWindowSharingType::None);
             }
         }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = toolbar;
+}
+
+fn raise_toolbar(app: &AppHandle) {
+    if let Some(toolbar) = app.get_webview_window("toolbar") {
+        apply_toolbar_window_style(&toolbar);
         let _ = toolbar.set_always_on_top(false);
         let _ = toolbar.set_always_on_top(true);
     }
+}
+
+fn toggle_toolbar_visibility(app: &AppHandle) {
+    let Some(toolbar) = app.get_webview_window("toolbar") else {
+        return;
+    };
+    if toolbar.is_visible().unwrap_or(true) {
+        let _ = toolbar.hide();
+    } else {
+        let _ = toolbar.show();
+        raise_toolbar(app);
+    }
+}
+
+fn emit_zoom_toggle(app: &AppHandle) {
+    // Each overlay decides whether the cursor is on its monitor
+    for label in overlay_labels(app) {
+        let _ = app.emit_to(&label, "zoom-toggle", ());
+    }
+}
+
+fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
+
+    let toolbar_item = MenuItem::with_id(app, "toolbar", "Show/Hide Toolbar (⌃⇧H)", true, None::<&str>)?;
+    let overlay_item = MenuItem::with_id(app, "overlay", "Toggle Overlay (⌃⇧X)", true, None::<&str>)?;
+    let draw_item = MenuItem::with_id(app, "draw", "Draw Mode (⌃⇧D)", true, None::<&str>)?;
+    let laser_item = MenuItem::with_id(app, "laser", "Laser (⌃⇧L)", true, None::<&str>)?;
+    let spotlight_item = MenuItem::with_id(app, "spotlight", "Spotlight (⌃⇧S)", true, None::<&str>)?;
+    let zoom_item = MenuItem::with_id(app, "zoom", "Zoom (⌃⇧M)", true, None::<&str>)?;
+    let fade_item = MenuItem::with_id(app, "fade", "Fading Ink (⌃⇧F)", true, None::<&str>)?;
+    let login_item = CheckMenuItem::with_id(
+        app,
+        "login",
+        "Open at Login",
+        true,
+        autostart_enabled,
+        None::<&str>,
+    )?;
+    let quit_item = MenuItem::with_id(app, "quit", "Quit Mira", true, None::<&str>)?;
+
+    let menu = Menu::with_items(
+        app,
+        &[
+            &toolbar_item,
+            &overlay_item,
+            &draw_item,
+            &laser_item,
+            &spotlight_item,
+            &zoom_item,
+            &fade_item,
+            &PredefinedMenuItem::separator(app)?,
+            &login_item,
+            &PredefinedMenuItem::separator(app)?,
+            &quit_item,
+        ],
+    )?;
+
+    let login_item_handle = login_item.clone();
+    let mut builder = TrayIconBuilder::with_id("mira")
+        .tooltip("Mira")
+        .menu(&menu)
+        .show_menu_on_left_click(true)
+        .on_menu_event(move |app, event| match event.id().as_ref() {
+            "toolbar" => toggle_toolbar_visibility(app),
+            "overlay" => {
+                let _ = app.emit_to("toolbar", "shortcut-toggle", ());
+            }
+            "draw" => {
+                let _ = app.emit_to("toolbar", "shortcut-draw-toggle", ());
+            }
+            "laser" => {
+                let _ = app.emit_to("toolbar", "shortcut-laser", ());
+            }
+            "spotlight" => {
+                let _ = app.emit_to("toolbar", "shortcut-spotlight", ());
+            }
+            "zoom" => emit_zoom_toggle(app),
+            "fade" => {
+                let _ = app.emit_to("toolbar", "shortcut-fade", ());
+            }
+            "login" => {
+                let autolaunch = app.autolaunch();
+                let currently = autolaunch.is_enabled().unwrap_or(false);
+                let result = if currently {
+                    autolaunch.disable()
+                } else {
+                    autolaunch.enable()
+                };
+                if let Err(e) = result {
+                    eprintln!("Failed to change Open at Login: {e}");
+                }
+                // The menu toggles its checkmark on click; resync with the real state
+                let _ = login_item_handle.set_checked(autolaunch.is_enabled().unwrap_or(currently));
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+    Ok(())
 }
 
 fn handle_shortcut(app: &AppHandle, shortcut: &Shortcut) {
@@ -421,11 +539,10 @@ fn handle_shortcut(app: &AppHandle, shortcut: &Shortcut) {
         Code::KeyL => {
             let _ = app.emit_to("toolbar", "shortcut-laser", ());
         }
-        Code::KeyM => {
-            // Each overlay decides whether the cursor is on its monitor
-            for label in overlay_labels(app) {
-                let _ = app.emit_to(&label, "zoom-toggle", ());
-            }
+        Code::KeyM => emit_zoom_toggle(app),
+        Code::KeyH => toggle_toolbar_visibility(app),
+        Code::KeyF => {
+            let _ = app.emit_to("toolbar", "shortcut-fade", ());
         }
         _ => {}
     }
