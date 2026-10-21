@@ -40,7 +40,16 @@ function distanceToSegment(p: Point, a: Point, b: Point): number {
   return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
 }
 
-function strokeHitsPoint(stroke: Stroke, pt: Point, radius: number): boolean {
+const HIGHLIGHTER_WIDTH_FACTOR = 3.5;
+
+/** Width actually painted on screen (highlighter is drawn much wider than its size). */
+function renderedWidth(stroke: Stroke): number {
+  return stroke.tool === "highlighter" ? stroke.width * HIGHLIGHTER_WIDTH_FACTOR : stroke.width;
+}
+
+function strokeHitsPoint(stroke: Stroke, pt: Point, eraserRadius: number): boolean {
+  // Count the stroke's own thickness so touching its visible edge erases it
+  const radius = stroke.tool === "text" ? eraserRadius : eraserRadius + renderedWidth(stroke) / 2;
   if (stroke.tool === "pen" || stroke.tool === "highlighter") {
     if (!stroke.points || stroke.points.length === 0) return false;
     if (stroke.points.length === 1) {
@@ -96,7 +105,7 @@ function cloneStrokes(strokes: Stroke[]): Stroke[] {
 }
 
 /** Smooth freehand path used for both live preview and committed strokes. */
-function buildFreehandPath(ctx: CanvasRenderingContext2D, points: Point[]) {
+export function buildFreehandPath(ctx: CanvasRenderingContext2D, points: Point[]) {
   if (points.length < 2) return;
   ctx.beginPath();
   ctx.moveTo(points[0].x, points[0].y);
@@ -127,11 +136,22 @@ interface UseDrawingOptions {
   lineWidth: number;
   enabled: boolean;
   tool: Tool;
+  /** Fading ink: finished strokes skip history and disappear after a few seconds. */
+  fade: boolean;
 }
 
 const MAX_HISTORY = 80;
+export const HIGHLIGHTER_ALPHA = 0.4;
+const FADE_HOLD_MS = 2500;
+const FADE_OUT_MS = 800;
 
-export function useDrawing({ color, lineWidth, enabled, tool }: UseDrawingOptions) {
+interface EphemeralStroke {
+  stroke: Stroke;
+  createdAt: number;
+}
+
+export function useDrawing({ color, lineWidth, enabled, tool, fade }: UseDrawingOptions) {
+  const hlCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const bgCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const fgCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const strokesRef = useRef<Stroke[]>([]);
@@ -141,17 +161,26 @@ export function useDrawing({ color, lineWidth, enabled, tool }: UseDrawingOption
   const previewStrokeRef = useRef<Stroke | null>(null);
   const isDrawingRef = useRef(false);
   const eraseHistoryPushedRef = useRef(false);
+  const ephemeralRef = useRef<EphemeralStroke[]>([]);
+  const fadeRafRef = useRef(0);
+  const hiddenIdRef = useRef<string | null>(null);
+  const fadeRef = useRef(fade);
+  fadeRef.current = fade;
 
   const getBgCtx = useCallback(() => bgCanvasRef.current?.getContext("2d") ?? null, []);
   const getFgCtx = useCallback(() => fgCanvasRef.current?.getContext("2d") ?? null, []);
 
-  const drawStroke = useCallback((ctx: CanvasRenderingContext2D, stroke: Stroke) => {
+  /**
+   * `highlighterAlpha` is 1 when painting into the highlight layer (whose CSS opacity
+   * provides the translucency, so overlapping highlights don't stack darker).
+   */
+  const drawStroke = useCallback((ctx: CanvasRenderingContext2D, stroke: Stroke, highlighterAlpha = HIGHLIGHTER_ALPHA, alpha = 1) => {
     ctx.strokeStyle = stroke.color;
     ctx.fillStyle = stroke.color;
     ctx.lineWidth = stroke.width;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    ctx.globalAlpha = 1;
+    ctx.globalAlpha = alpha;
 
     if (stroke.tool === "text") {
       if (!stroke.text || !stroke.position) return;
@@ -164,8 +193,8 @@ export function useDrawing({ color, lineWidth, enabled, tool }: UseDrawingOption
     if (stroke.tool === "highlighter") {
       if (!stroke.points || stroke.points.length < 2) return;
       ctx.save();
-      ctx.globalAlpha = 0.4;
-      ctx.lineWidth = stroke.width * 3.5;
+      ctx.globalAlpha = highlighterAlpha * alpha;
+      ctx.lineWidth = renderedWidth(stroke);
       ctx.lineCap = "butt";
       ctx.lineJoin = "round";
       buildFreehandPath(ctx, stroke.points);
@@ -233,15 +262,39 @@ export function useDrawing({ color, lineWidth, enabled, tool }: UseDrawingOption
     }
   }, []);
 
-  const replayStrokes = useCallback(
-    (strokes: Stroke[]) => {
+  /**
+   * Render committed strokes (plus fading ones): highlights to their own layer,
+   * everything else to bg.
+   */
+  const renderLayers = useCallback(
+    (strokes: Stroke[], hiddenId: string | null) => {
+      hiddenIdRef.current = hiddenId;
       const bgCanvas = bgCanvasRef.current;
+      const hlCanvas = hlCanvasRef.current;
       const bgCtx = getBgCtx();
-      if (!bgCanvas || !bgCtx) return;
+      const hlCtx = hlCanvas?.getContext("2d") ?? null;
+      if (!bgCanvas || !bgCtx || !hlCanvas || !hlCtx) return;
       clearFull(bgCanvas, bgCtx);
-      for (const stroke of strokes) drawStroke(bgCtx, stroke);
+      clearFull(hlCanvas, hlCtx);
+      for (const stroke of strokes) {
+        if (hiddenId && stroke.id === hiddenId) continue;
+        if (stroke.tool === "highlighter") drawStroke(hlCtx, stroke, 1);
+        else drawStroke(bgCtx, stroke);
+      }
+      const now = performance.now();
+      for (const { stroke, createdAt } of ephemeralRef.current) {
+        const age = now - createdAt;
+        const alpha = age <= FADE_HOLD_MS ? 1 : Math.max(0, 1 - (age - FADE_HOLD_MS) / FADE_OUT_MS);
+        if (stroke.tool === "highlighter") drawStroke(hlCtx, stroke, 1, alpha);
+        else drawStroke(bgCtx, stroke, HIGHLIGHTER_ALPHA, alpha);
+      }
     },
     [drawStroke, getBgCtx],
+  );
+
+  const replayStrokes = useCallback(
+    (strokes: Stroke[]) => renderLayers(strokes, null),
+    [renderLayers],
   );
 
   const clearFg = useCallback(() => {
@@ -262,6 +315,36 @@ export function useDrawing({ color, lineWidth, enabled, tool }: UseDrawingOption
     [replayStrokes],
   );
 
+  /** Animate fading strokes; the loop stops once none are left. */
+  const runFadeLoop = useCallback(() => {
+    if (fadeRafRef.current) return;
+    const frame = () => {
+      fadeRafRef.current = 0;
+      const now = performance.now();
+      ephemeralRef.current = ephemeralRef.current.filter(
+        (e) => now - e.createdAt < FADE_HOLD_MS + FADE_OUT_MS,
+      );
+      renderLayers(strokesRef.current, hiddenIdRef.current);
+      if (ephemeralRef.current.length) fadeRafRef.current = requestAnimationFrame(frame);
+    };
+    fadeRafRef.current = requestAnimationFrame(frame);
+  }, [renderLayers]);
+
+  useEffect(() => () => cancelAnimationFrame(fadeRafRef.current), []);
+
+  /** Finished drawing gesture: permanent (undoable) or ephemeral in fade mode. */
+  const addFinishedStroke = useCallback(
+    (stroke: Stroke) => {
+      if (fadeRef.current) {
+        ephemeralRef.current.push({ stroke, createdAt: performance.now() });
+        runFadeLoop();
+      } else {
+        commit([...strokesRef.current, stroke]);
+      }
+    },
+    [commit, runFadeLoop],
+  );
+
   /** Mutate strokes without a history entry (used mid-gesture). */
   const replaceLive = useCallback(
     (next: Stroke[]) => {
@@ -273,13 +356,14 @@ export function useDrawing({ color, lineWidth, enabled, tool }: UseDrawingOption
 
   // Retina-aware resize
   useEffect(() => {
+    const hlCanvas = hlCanvasRef.current;
     const bgCanvas = bgCanvasRef.current;
     const fgCanvas = fgCanvasRef.current;
-    if (!bgCanvas || !fgCanvas) return;
+    if (!hlCanvas || !bgCanvas || !fgCanvas) return;
 
     const resize = () => {
       const dpr = window.devicePixelRatio || 1;
-      for (const canvas of [bgCanvas, fgCanvas]) {
+      for (const canvas of [hlCanvas, bgCanvas, fgCanvas]) {
         canvas.width = window.innerWidth * dpr;
         canvas.height = window.innerHeight * dpr;
         canvas.style.width = `${window.innerWidth}px`;
@@ -395,6 +479,14 @@ export function useDrawing({ color, lineWidth, enabled, tool }: UseDrawingOption
         return;
       }
 
+      if (tool === "highlighter" && e.shiftKey && currentPointsRef.current.length) {
+        // Straight marker line (snapped to 45°) for underlining text
+        const start = currentPointsRef.current[0];
+        currentPointsRef.current = [start, constrainTo45Degrees(start, pt)];
+        paintLiveFreehand(fgCtx, currentPointsRef.current);
+        return;
+      }
+
       if (tool === "pen" || tool === "highlighter") {
         const pts = currentPointsRef.current;
         const last = pts[pts.length - 1];
@@ -428,16 +520,13 @@ export function useDrawing({ color, lineWidth, enabled, tool }: UseDrawingOption
       if (tool === "pen" || tool === "highlighter") {
         const points = currentPointsRef.current;
         if (points.length > 1) {
-          commit([
-            ...strokesRef.current,
-            {
-              id: newStrokeId(tool),
-              tool,
-              points: [...points],
-              color,
-              width: lineWidth,
-            },
-          ]);
+          addFinishedStroke({
+            id: newStrokeId(tool),
+            tool,
+            points: [...points],
+            color,
+            width: lineWidth,
+          });
         }
       } else if (previewStrokeRef.current?.start) {
         const rect = fgCanvas.getBoundingClientRect();
@@ -447,10 +536,7 @@ export function useDrawing({ color, lineWidth, enabled, tool }: UseDrawingOption
         }
         const { start } = previewStrokeRef.current;
         if (Math.abs(pt.x - start.x) > 1 || Math.abs(pt.y - start.y) > 1) {
-          commit([
-            ...strokesRef.current,
-            { ...previewStrokeRef.current, end: pt },
-          ]);
+          addFinishedStroke({ ...previewStrokeRef.current, end: pt });
         }
       }
 
@@ -469,7 +555,7 @@ export function useDrawing({ color, lineWidth, enabled, tool }: UseDrawingOption
       fgCanvas.removeEventListener("pointerup", onUp);
       fgCanvas.removeEventListener("pointercancel", onUp);
     };
-  }, [enabled, color, lineWidth, tool, getFgCtx, drawStroke, replayStrokes, commit, clearFg]);
+  }, [enabled, color, lineWidth, tool, getFgCtx, drawStroke, replayStrokes, addFinishedStroke, clearFg]);
 
   const undo = useCallback(() => {
     if (!pastRef.current.length) return;
@@ -490,7 +576,9 @@ export function useDrawing({ color, lineWidth, enabled, tool }: UseDrawingOption
   }, [replayStrokes, clearFg]);
 
   const clear = useCallback(() => {
+    ephemeralRef.current = [];
     if (!strokesRef.current.length) {
+      replayStrokes(strokesRef.current);
       clearFg();
       return;
     }
@@ -498,7 +586,7 @@ export function useDrawing({ color, lineWidth, enabled, tool }: UseDrawingOption
     currentPointsRef.current = [];
     previewStrokeRef.current = null;
     clearFg();
-  }, [commit, clearFg]);
+  }, [commit, clearFg, replayStrokes]);
 
   const addTextStroke = useCallback(
     (text: string, position: Point, strokeColor: string, width: number): string => {
@@ -585,20 +673,12 @@ export function useDrawing({ color, lineWidth, enabled, tool }: UseDrawingOption
 
   /** Hide a stroke while its inline editor is open (avoids double-draw). */
   const setHiddenStrokeId = useCallback(
-    (id: string | null) => {
-      const bgCanvas = bgCanvasRef.current;
-      const bgCtx = getBgCtx();
-      if (!bgCanvas || !bgCtx) return;
-      clearFull(bgCanvas, bgCtx);
-      for (const stroke of strokesRef.current) {
-        if (id && stroke.id === id) continue;
-        drawStroke(bgCtx, stroke);
-      }
-    },
-    [drawStroke, getBgCtx],
+    (id: string | null) => renderLayers(strokesRef.current, id),
+    [renderLayers],
   );
 
   return {
+    hlCanvasRef,
     bgCanvasRef,
     fgCanvasRef,
     undo,

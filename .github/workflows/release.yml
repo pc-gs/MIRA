@@ -80,10 +80,8 @@ jobs:
         platform:
           - name: macOS
             runner: macos-latest
-          - name: Windows
-            runner: windows-latest
-          - name: Linux
-            runner: ubuntu-22.04
+          # macOS only for now. The app is still Tauri, so Windows/Linux can be
+          # re-enabled by adding runners here (Linux needs the webkit apt deps).
 
     steps:
       - name: Checkout
@@ -102,25 +100,6 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
-      - name: Install Linux dependencies
-        if: matrix.platform.runner == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libxdo-dev \
-            libssl-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            javascriptcoregtk-4.1-dev \
-            libsoup-3.0-dev \
-            patchelf
-
       - name: Install JS dependencies
         run: bun install
 
@@ -138,11 +117,6 @@ jobs:
             src-tauri/target/release/bundle/**/*.dmg
             src-tauri/target/release/bundle/**/*.app.tar.gz
             src-tauri/target/release/bundle/**/*.app.tar.gz.sig
-            src-tauri/target/release/bundle/**/*.msi
-            src-tauri/target/release/bundle/**/*.exe
-            src-tauri/target/release/bundle/**/*.deb
-            src-tauri/target/release/bundle/**/*.AppImage
-            src-tauri/target/release/bundle/**/*.rpm
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
