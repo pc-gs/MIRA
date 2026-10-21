@@ -1,139 +1,111 @@
-# Mira
+<p align="center">
+  <img src="src-tauri/icons/128x128@2x.png" width="96" alt="Mira icon" />
+</p>
 
-![Mira toolbar preview](docs/preview.png)
+<h1 align="center">Mira</h1>
 
-> Show what you mean.
+<p align="center"><b>Show what you mean.</b><br/>
+A lightweight screen annotation overlay for macOS — draw, highlight, point and zoom on top of any app while you present.</p>
 
-Mira is a lightweight desktop annotation overlay for live presentations, demos, and teaching.
-You can draw on top of any app, highlight key points, and clear everything quickly without leaving your flow.
+<p align="center">
+  <img src="docs/demo.gif" alt="Mira demo: highlighter, pen, laser pointer, fading ink and zoom" width="860" />
+</p>
 
-This project was created to solve a real day-to-day presentation problem and to learn Tauri by building a real product with AI-assisted development.
-If this is useful for your workflow, feel free to use it, adapt it, and contribute.
+<p align="center">
+  <img src="docs/toolbar.png" alt="Mira toolbar" width="640" />
+</p>
 
-## What Mira Does
+> The demo above is the real Mira interface rendered in a browser with the native layer simulated, on a sample slide. A recording from the macOS app is coming.
 
-- Opens a transparent, always-on-top drawing overlay
-- Provides a floating, low-profile draggable toolbar
-- Pen, highlighter, eraser, and shapes (line, rectangle, ellipse, arrow)
-- Highlighter that behaves like a real marker: yellow by default, uniform color where strokes overlap, sits under pen ink, `Shift` for straight lines
-- ZoomIt-style zoom: freeze the screen, magnify around the cursor, scroll to change level, draw on the zoomed view
-- Laser pointer with a fading trail (clicks still go to the app underneath)
-- Fading ink: annotations disappear on their own after a few seconds (great for standups)
-- Toolbar is hidden from screen sharing — your audience sees the annotations, not the controls
-- Menu bar icon with all actions and an "Open at Login" option
-- Text annotations (click to place, click again to edit or drag)
-- Color and stroke controls
-- Undo / redo / clear (eraser and clear are fully undoable)
-- Spotlight pointer for live presentations
-- Multi-monitor overlays
-- macOS only (built with Tauri; Windows/Linux are not maintained)
-- Reliable global shortcuts (no fake settings UI)
+## Why
 
-## Why This Exists
+During live calls, standups and demos, switching tools breaks your flow. Mira keeps a small toolbar and a transparent drawing layer on top of your screen, so you can explain visually and get back to work in a second.
 
-During live calls and presentations, switching tools breaks flow.
-Mira keeps annotation controls instantly available on top of your screen so explanations stay visual and fast.
+## Features
 
-## Tech Stack
+**Draw**
+- Pen, highlighter, eraser, line, rectangle, ellipse, arrow and text
+- A highlighter that behaves like a real marker: yellow by default, even color where strokes overlap, sits under your pen ink, hold `⇧` for a straight line
+- `⇧` also snaps lines/arrows to 45° and makes perfect squares/circles
+- Undo, redo and clear (all undoable)
 
-- Tauri 2 (Rust backend + desktop shell)
-- React 19 + TypeScript (UI)
-- Vite (frontend build)
-- Bun (package/runtime tooling)
+**Present**
+- **Zoom** (ZoomIt-style): freeze the screen and magnify around the cursor; scroll to change level, draw on the zoomed view, `Esc` to exit
+- **Laser pointer** with a fading trail — clicks still go to the app underneath
+- **Spotlight** ring that follows the cursor
+- **Fading ink**: annotations disappear on their own after a few seconds — great for standups
 
-## Architecture
+**Stay out of the way**
+- The toolbar is **hidden from screen sharing**: your audience sees the annotations, not the controls
+- Menu bar icon with every action and **Open at Login**
+- Global shortcuts for everything, multi-monitor support (including hot-plugged displays)
 
-Mira follows a split-window architecture:
-
-- `toolbar` window: compact floating controller
-- `overlay*` windows: transparent per-monitor drawing surfaces
-- Rust core: creates/manages windows, handles positioning, and command/event bridge
-
-Frontend windows call Rust commands (`invoke`), and Rust emits events back to overlays/toolbars for synchronized state changes.
-
-```mermaid
-flowchart LR
-  U["User"] --> T["Toolbar Window (React)"]
-  T -->|"invoke commands"| R["Tauri Core (Rust)"]
-  R -->|"emit events"| O["Overlay Windows (React Canvas)"]
-  O -->|"visual feedback"| U
-  R --> M["Multi-monitor window manager"]
-```
-
-## Project Structure
-
-```text
-mira/
-  src/
-    components/
-      Toolbar.tsx
-      Canvas.tsx
-    hooks/
-      useDrawing.ts
-    types/
-  src-tauri/
-    src/
-      lib.rs
-    tauri.conf.json
-```
-
-## Keyboard Shortcuts
+## Keyboard shortcuts
 
 | Shortcut | Action |
 |---|---|
-| `Ctrl+Shift+X` | Toggle overlay on/off |
-| `Ctrl+Shift+D` | Toggle draw mode |
-| `Ctrl+Shift+C` | Clear canvas |
-| `Ctrl+Shift+Z` | Undo |
-| `Ctrl+Shift+Y` | Redo |
-| `Ctrl+Shift+S` | Toggle spotlight |
-| `Ctrl+Shift+L` | Toggle laser pointer |
-| `Ctrl+Shift+M` | Zoom in/out (scroll = level, drag = draw, `Esc`/right-click = exit) |
-| `Ctrl+Shift+F` | Toggle fading ink |
-| `Ctrl+Shift+H` | Show/hide toolbar |
-| `Esc` (overlay focused) | Leave draw mode |
+| `⌃⇧D` | Toggle draw mode (pen) |
+| `⌃⇧L` | Laser pointer |
+| `⌃⇧M` | Zoom (scroll = level, drag = draw, `Esc`/right-click = exit) |
+| `⌃⇧F` | Fading ink |
+| `⌃⇧S` | Spotlight |
+| `⌃⇧Z` / `⌃⇧Y` | Undo / Redo |
+| `⌃⇧C` | Clear |
+| `⌃⇧X` | Show/hide the overlay |
+| `⌃⇧H` | Show/hide the toolbar |
+| `Esc` | Leave draw mode |
 
-On macOS, grant Accessibility permissions in System Settings for global shortcuts.
-Annotations only reach a video call when you share the **entire screen** (sharing a single window doesn't include Mira's overlay).
-Zoom needs **Screen Recording** permission (System Settings → Privacy & Security → Screen Recording). If the zoomed view shows only your wallpaper, that permission is missing.
+## Install & run
 
-## Getting Started
-
-### Prerequisites
-
-- [Rust](https://rustup.rs/)
-- [Bun](https://bun.sh/)
-- macOS (primary tested target)
-
-### Run in development
+Mira targets **macOS**. There are no signed downloads yet, so for now run it from source:
 
 ```bash
+# Prerequisites: Rust (https://rustup.rs) and Bun (https://bun.sh)
+git clone https://github.com/pc-gs/MIRA.git
+cd MIRA
 bun install
-bun run tauri dev
+bun run tauri dev        # run in development
+bun run tauri build      # build Mira.app / .dmg into src-tauri/target/release/bundle/
 ```
 
-### Build
+### macOS permissions
+
+Grant these in **System Settings → Privacy & Security** (in development, grant them to your terminal app):
+
+- **Accessibility** — needed for the global shortcuts.
+- **Screen Recording** — needed for zoom. If the zoomed view shows only your wallpaper, this permission is missing.
+
+### Using it in video calls
+
+Annotations reach Meet, Zoom or Teams only when you share your **entire screen**. Sharing a single window doesn't include Mira's overlay.
+
+## How it works
+
+Mira is a [Tauri 2](https://tauri.app) app: a Rust core plus a React + TypeScript UI.
+
+- A small **toolbar** window holds the controls and owns the state.
+- One transparent, always-on-top **overlay** window per monitor does the drawing. Overlays are click-through until you start drawing.
+- The Rust core creates and positions the windows, registers global shortcuts and the menu bar icon, streams the cursor position, and captures the screen for zoom. It relays events between the toolbar and the overlays.
+
+```mermaid
+flowchart LR
+  U["You"] --> T["Toolbar (React)"]
+  T -->|"invoke"| R["Tauri core (Rust)"]
+  R -->|"events"| O["Overlays (React canvas), one per monitor"]
+  R --> S["Shortcuts · menu bar · screen capture"]
+  O --> U
+```
+
+The [architecture notes in `CLAUDE.md`](CLAUDE.md) describe the event contract in detail. The roadmap and known gaps are in [`NEXT_STEPS.md`](NEXT_STEPS.md).
+
+## Contributing
+
+Contributions are welcome. Keep changes focused, and include a screenshot or GIF for UI changes. Before opening a PR, run:
 
 ```bash
-bun run tauri build
+bun run build     # TypeScript typecheck + frontend build
 ```
 
-## Contribution
+## About
 
-Contributions are welcome.
-
-1. Fork the repository
-2. Create a feature branch
-3. Make focused changes with clear commit messages
-4. Open a pull request with:
-   - what changed
-   - why it changed
-   - screenshots/gifs for UI updates
-
-Please keep changes small and practical, and prefer incremental improvements.
-
-## Project Info
-
-- Author: Pedro Santos
-- Repository: [p-c-g-s/MIRA](https://github.com/p-c-g-s/MIRA)
-
+Built by Pedro Santos to solve a real day-to-day presentation problem and to learn Tauri by building a real product with AI-assisted development. If it's useful to you, feel free to use it, adapt it, and contribute.

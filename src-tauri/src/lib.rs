@@ -503,8 +503,14 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             "quit" => app.exit(0),
             _ => {}
         });
-    if let Some(icon) = app.default_window_icon() {
-        builder = builder.icon(icon.clone());
+    // Monochrome template glyph so macOS tints it like other menu bar icons
+    match tauri::image::Image::from_bytes(include_bytes!("../icons/tray-template.png")) {
+        Ok(icon) => builder = builder.icon(icon).icon_as_template(true),
+        Err(_) => {
+            if let Some(icon) = app.default_window_icon() {
+                builder = builder.icon(icon.clone());
+            }
+        }
     }
     builder.build(app)?;
     Ok(())
