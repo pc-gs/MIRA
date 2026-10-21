@@ -14,7 +14,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 
 const TOOLBAR_POSITION_FILE: &str = "toolbar-position.json";
-const TOOLBAR_LOGICAL_WIDTH_DEFAULT: f64 = 692.0;
+const TOOLBAR_LOGICAL_WIDTH_DEFAULT: f64 = 696.0;
 const TOOLBAR_LOGICAL_HEIGHT: f64 = 60.0;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

@@ -336,8 +336,19 @@ export function Canvas() {
         />
       )}
       {notice && (
-        <div className="pointer-events-none fixed top-6 left-1/2 -translate-x-1/2 max-w-md px-4 py-2 rounded-lg bg-neutral-900/90 text-white text-sm shadow-xl">
-          {notice}
+        <div
+          className="pointer-events-none fixed top-8 left-1/2 -translate-x-1/2 max-w-lg flex items-start gap-3 px-4 py-3 rounded-2xl text-[13px] leading-snug text-zinc-100"
+          style={{
+            background: "rgba(24,24,27,0.88)",
+            boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.1), 0 16px 40px -10px rgba(0,0,0,0.6)",
+            backdropFilter: "blur(14px)",
+            fontFamily: "-apple-system, BlinkMacSystemFont, system-ui, sans-serif",
+          }}
+        >
+          <span className="mt-0.5 flex-shrink-0 w-4 h-4 rounded-full bg-amber-400 text-zinc-900 text-[11px] font-bold flex items-center justify-center">
+            !
+          </span>
+          <span>{notice}</span>
         </div>
       )}
       {textInput && (

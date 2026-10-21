@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { buildFreehandPath } from "../hooks/useDrawing";
 import type { Point } from "../types";
@@ -7,6 +7,12 @@ const MIN_LEVEL = 1;
 const MAX_LEVEL = 8;
 const START_LEVEL = 2;
 const WHEEL_STEP = 1.15;
+const HUD_MS = 1800;
+
+interface Hud {
+  level: number;
+  locked: boolean;
+}
 
 interface ZoomStroke {
   color: string;
@@ -31,6 +37,15 @@ interface ZoomViewProps {
  */
 export function ZoomView({ initialCursor, color, lineWidth, getPassThrough, onExit, onError }: ZoomViewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [hud, setHud] = useState<Hud | null>(null);
+  const [hudVisible, setHudVisible] = useState(false);
+  const hudTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showHudRef = useRef((next: Hud) => {
+    setHud(next);
+    setHudVisible(true);
+    if (hudTimerRef.current) clearTimeout(hudTimerRef.current);
+    hudTimerRef.current = setTimeout(() => setHudVisible(false), HUD_MS);
+  });
   const styleRef = useRef({ color, lineWidth });
   styleRef.current = { color, lineWidth };
   const callbacksRef = useRef({ getPassThrough, onExit, onError });
@@ -116,7 +131,10 @@ export function ZoomView({ initialCursor, color, lineWidth, getPassThrough, onEx
       if (e.button !== 0 || !bitmap) return;
       canvas.setPointerCapture(e.pointerId);
       // First stroke locks the view so drawings stay aligned with the content
-      if (!frozen) frozen = sourceRect();
+      if (!frozen) {
+        frozen = sourceRect();
+        showHudRef.current({ level, locked: true });
+      }
       const { color: c, lineWidth: lw } = styleRef.current;
       current = { color: c, width: lw, points: [pointFrom(e)] };
       schedule();
@@ -145,6 +163,7 @@ export function ZoomView({ initialCursor, color, lineWidth, getPassThrough, onEx
       if (frozen) return;
       const factor = e.deltaY < 0 ? WHEEL_STEP : 1 / WHEEL_STEP;
       targetLevel = Math.min(MAX_LEVEL, Math.max(MIN_LEVEL, targetLevel * factor));
+      showHudRef.current({ level: targetLevel, locked: false });
       schedule();
     };
 
@@ -185,6 +204,7 @@ export function ZoomView({ initialCursor, color, lineWidth, getPassThrough, onEx
           return;
         }
         bitmap = decoded;
+        showHudRef.current({ level: targetLevel, locked: false });
         schedule();
       } catch (err) {
         if (!cancelled) callbacksRef.current.onError(String(err));
@@ -202,6 +222,7 @@ export function ZoomView({ initialCursor, color, lineWidth, getPassThrough, onEx
       canvas.removeEventListener("wheel", onWheel);
       canvas.removeEventListener("contextmenu", onContextMenu);
       if (raf) cancelAnimationFrame(raf);
+      if (hudTimerRef.current) clearTimeout(hudTimerRef.current);
       bitmap?.close();
       void endZoom();
     };
@@ -209,10 +230,36 @@ export function ZoomView({ initialCursor, color, lineWidth, getPassThrough, onEx
   }, []);
 
   return (
-    <canvas
-      ref={canvasRef}
-      className="absolute inset-0 w-full h-full"
-      style={{ cursor: "crosshair", touchAction: "none" }}
-    />
+    <>
+      <canvas
+        ref={canvasRef}
+        className="absolute inset-0 w-full h-full"
+        style={{ cursor: "crosshair", touchAction: "none" }}
+      />
+      {/* Thin frame so it's obvious the screen is frozen */}
+      <div
+        className="pointer-events-none fixed inset-0"
+        style={{ boxShadow: "inset 0 0 0 2px rgba(10,132,255,0.55), inset 0 0 40px rgba(10,132,255,0.12)" }}
+      />
+      {hud && (
+        <div
+          className="pointer-events-none fixed bottom-8 left-1/2 flex items-center gap-3 px-4 h-10 rounded-full text-[13px] text-zinc-100 transition-all duration-300"
+          style={{
+            transform: `translateX(-50%) translateY(${hudVisible ? 0 : 8}px)`,
+            opacity: hudVisible ? 1 : 0,
+            background: "rgba(24,24,27,0.82)",
+            boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.1), 0 10px 30px -8px rgba(0,0,0,0.6)",
+            backdropFilter: "blur(12px)",
+            fontFamily: "-apple-system, BlinkMacSystemFont, system-ui, sans-serif",
+          }}
+        >
+          <span className="font-semibold tabular-nums text-white">{hud.level.toFixed(1)}×</span>
+          <span className="w-px h-4 bg-white/15" />
+          <span className="text-zinc-400">
+            {hud.locked ? "View locked while drawing" : "Scroll to zoom · drag to draw"} · Esc to exit
+          </span>
+        </div>
+      )}
+    </>
   );
 }

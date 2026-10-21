@@ -31,7 +31,7 @@
       {
         "label": "toolbar",
         "title": "Mira",
-        "width": 540,
+        "width": 760,
         "height": 60,
         "decorations": false,
         "transparent": true,
@@ -40,7 +40,14 @@
         "resizable": false,
         "skipTaskbar": false,
         "shadow": true,
-        "visible": true
+        "visible": true,
+        "windowEffects": {
+          "effects": [
+            "hudWindow"
+          ],
+          "state": "active",
+          "radius": 16
+        }
       }
     ],
     "macOSPrivateApi": true,
