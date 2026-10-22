@@ -404,14 +404,29 @@ export function useDrawing({ color, lineWidth, enabled, tool, fade }: UseDrawing
       replayStrokes(next);
     };
 
+    /** The eraser hides the system cursor, so this ring is the only pointer: draw it on hover too. */
     const drawEraserCursor = (fgCtx: CanvasRenderingContext2D, pt: Point) => {
       clearFull(fgCanvas, fgCtx);
+      const r = eraseRadius();
       fgCtx.save();
+      // Dark halo + light ring stays visible on both light and dark content
       fgCtx.beginPath();
-      fgCtx.arc(pt.x, pt.y, eraseRadius(), 0, Math.PI * 2);
-      fgCtx.strokeStyle = "rgba(244, 63, 94, 0.85)";
+      fgCtx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
+      fgCtx.strokeStyle = "rgba(0, 0, 0, 0.45)";
+      fgCtx.lineWidth = 3.5;
+      fgCtx.stroke();
+      fgCtx.strokeStyle = "rgba(255, 255, 255, 0.95)";
       fgCtx.lineWidth = 1.5;
-      fgCtx.setLineDash([3, 3]);
+      fgCtx.stroke();
+      fgCtx.fillStyle = isDrawingRef.current ? "rgba(244, 63, 94, 0.18)" : "rgba(255, 255, 255, 0.08)";
+      fgCtx.fill();
+      // Center dot marks the exact pointer position
+      fgCtx.beginPath();
+      fgCtx.arc(pt.x, pt.y, 1.75, 0, Math.PI * 2);
+      fgCtx.fillStyle = "rgba(255, 255, 255, 0.95)";
+      fgCtx.fill();
+      fgCtx.strokeStyle = "rgba(0, 0, 0, 0.55)";
+      fgCtx.lineWidth = 1;
       fgCtx.stroke();
       fgCtx.restore();
     };
@@ -467,7 +482,14 @@ export function useDrawing({ color, lineWidth, enabled, tool, fade }: UseDrawing
     };
 
     const onMove = (e: PointerEvent) => {
-      if (!isDrawingRef.current) return;
+      if (!isDrawingRef.current) {
+        if (tool === "eraser") {
+          const rect = fgCanvas.getBoundingClientRect();
+          const fgCtx = getFgCtx();
+          if (fgCtx) drawEraserCursor(fgCtx, { x: e.clientX - rect.left, y: e.clientY - rect.top });
+        }
+        return;
+      }
       const rect = fgCanvas.getBoundingClientRect();
       let pt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
       const fgCtx = getFgCtx();
@@ -512,8 +534,11 @@ export function useDrawing({ color, lineWidth, enabled, tool, fade }: UseDrawing
       isDrawingRef.current = false;
 
       if (tool === "eraser") {
-        clearFg();
         eraseHistoryPushedRef.current = false;
+        // Keep showing the (idle) ring where the pointer is
+        const rect = fgCanvas.getBoundingClientRect();
+        const fgCtx = getFgCtx();
+        if (fgCtx) drawEraserCursor(fgCtx, { x: e.clientX - rect.left, y: e.clientY - rect.top });
         return;
       }
 
@@ -549,7 +574,14 @@ export function useDrawing({ color, lineWidth, enabled, tool, fade }: UseDrawing
     fgCanvas.addEventListener("pointermove", onMove);
     fgCanvas.addEventListener("pointerup", onUp);
     fgCanvas.addEventListener("pointercancel", onUp);
+    const onLeave = () => {
+      if (tool === "eraser" && !isDrawingRef.current) clearFg();
+    };
+    fgCanvas.addEventListener("pointerleave", onLeave);
     return () => {
+      fgCanvas.removeEventListener("pointerleave", onLeave);
+      // Don't leave a stale eraser ring behind when switching tools / leaving draw mode
+      if (tool === "eraser") clearFg();
       fgCanvas.removeEventListener("pointerdown", onDown);
       fgCanvas.removeEventListener("pointermove", onMove);
       fgCanvas.removeEventListener("pointerup", onUp);
