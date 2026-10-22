@@ -96,7 +96,28 @@ fn set_overlay_passthrough(
                 .map_err(|e| e.to_string())?;
         }
     }
+    if !pass_through {
+        // Give the overlay under the cursor keyboard focus so single-key draw
+        // shortcuts (colors, tools, sizes) work without clicking it first
+        focus_overlay_under_cursor(&app);
+    }
     Ok(())
+}
+
+fn focus_overlay_under_cursor(app: &AppHandle) {
+    let Ok(cursor) = app.cursor_position() else { return };
+    for label in overlay_labels(app) {
+        let Some(overlay) = app.get_webview_window(&label) else { continue };
+        let (Ok(pos), Ok(size)) = (overlay.outer_position(), overlay.outer_size()) else { continue };
+        let inside = cursor.x >= pos.x as f64
+            && cursor.y >= pos.y as f64
+            && cursor.x < pos.x as f64 + size.width as f64
+            && cursor.y < pos.y as f64 + size.height as f64;
+        if inside {
+            let _ = overlay.set_focus();
+            return;
+        }
+    }
 }
 
 /// Show or hide the overlay window.
