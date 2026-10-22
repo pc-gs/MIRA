@@ -8,6 +8,9 @@ import { ZoomView } from "./ZoomView";
 import { TextInput } from "./TextInput";
 import { CursorHalo } from "./CursorHalo";
 import { ClickRipples } from "./ClickRipples";
+import { BrushCursor } from "./BrushCursor";
+import { ShortcutSheet, ShortcutHint } from "./ShortcutSheet";
+import { drawCommandForKey, SPRING_TOOLS } from "../lib/drawKeys";
 import type { Tool, Point, Stroke, PointerMode } from "../types";
 
 // Classic red laser: stays visible on light and dark slides regardless of pen color
@@ -33,6 +36,18 @@ interface TextDrag {
   moved: boolean;
 }
 
+/** A tool key held down: its tool is used while held, a plain tap switches tools for good. */
+interface SpringKey {
+  key: string;
+  tool: Tool;
+  used: boolean;
+}
+
+// The "? for shortcuts" pill only shows the first few times draw mode turns on
+const HINT_SHOWS = 3;
+const HINT_MS = 2600;
+let hintsShown = 0;
+
 export function Canvas() {
   const [drawingEnabled, setDrawingEnabled] = useState(false);
   const [tool, setTool] = useState<Tool>("pen");
@@ -47,6 +62,10 @@ export function Canvas() {
   const [hoverText, setHoverText] = useState(false);
   const [zoomActive, setZoomActive] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [springTool, setSpringTool] = useState<Tool | null>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [hintVisible, setHintVisible] = useState(false);
+  const springRef = useRef<SpringKey | null>(null);
 
   const textDragRef = useRef<TextDrag | null>(null);
   const cursor = useCursorStream();
@@ -55,12 +74,17 @@ export function Canvas() {
   drawingEnabledRef.current = drawingEnabled;
   const zoomActiveRef = useRef(zoomActive);
   zoomActiveRef.current = zoomActive;
+  const helpOpenRef = useRef(helpOpen);
+  helpOpenRef.current = helpOpen;
 
   // Quick-draw only counts in presenter mode and when regular draw mode is off
   const quickDraw = presenterMode && quickDrawRaw && !drawingEnabled;
   const drawingActive = drawingEnabled || quickDraw;
+  // A held tool key (draw mode only) overrides the selected tool
+  const activeTool: Tool = (drawingEnabled && springTool) || tool;
   // Quick-draw marks with ink tools; eraser/text fall back to the pen
-  const effectiveTool: Tool = quickDraw && (tool === "eraser" || tool === "text") ? "pen" : tool;
+  const effectiveTool: Tool =
+    quickDraw && (activeTool === "eraser" || activeTool === "text") ? "pen" : activeTool;
 
   const {
     hlCanvasRef,
@@ -80,7 +104,7 @@ export function Canvas() {
   } = useDrawing({
     color,
     lineWidth,
-    enabled: drawingActive && !textInput && !zoomActive,
+    enabled: drawingActive && !textInput && !zoomActive && !helpOpen,
     tool: effectiveTool,
     // Presenter marks always fade so the content stays clean
     fade: fadeEnabled || quickDraw,
@@ -119,7 +143,7 @@ export function Canvas() {
 
   // Text tool: create / edit / drag. Other tools leave drawing to useDrawing.
   const handlePointerDown = (e: React.PointerEvent) => {
-    if (!drawingEnabled || tool !== "text" || textInput || zoomActive) return;
+    if (!drawingEnabled || activeTool !== "text" || textInput || zoomActive) return;
 
     const pt = pointFromEvent(e);
     const hit = findTextStrokeAt(pt);
@@ -160,7 +184,7 @@ export function Canvas() {
       return;
     }
 
-    if (tool === "text" && !textInput) {
+    if (activeTool === "text" && !textInput) {
       setHoverText(!!findTextStrokeAt(pt));
     } else if (hoverText) {
       setHoverText(false);
@@ -168,7 +192,7 @@ export function Canvas() {
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
-    if (!drawingEnabled || tool !== "text" || zoomActive) return;
+    if (!drawingEnabled || activeTool !== "text" || zoomActive) return;
 
     const pt = pointFromEvent(e);
 
@@ -212,12 +236,20 @@ export function Canvas() {
 
   // Local keys when the overlay has focus (global shortcuts also fire via Rust)
   useEffect(() => {
+    const endSpring = () => {
+      springRef.current = null;
+      setSpringTool(null);
+    };
+
     const onKey = (e: KeyboardEvent) => {
       const tag = (document.activeElement as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
       if (zoomActiveRef.current) return; // ZoomView handles its own keys
 
-      if (e.key === "Escape" && drawingEnabledRef.current) {
+      if (e.key === "Escape" && helpOpenRef.current) {
+        e.preventDefault();
+        setHelpOpen(false);
+      } else if (e.key === "Escape" && drawingEnabledRef.current) {
         // Toolbar owns draw mode; ask it to switch back to click-through
         e.preventDefault();
         void emit("overlay-escape");
@@ -228,11 +260,65 @@ export function Canvas() {
       } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "y") {
         e.preventDefault();
         redo();
+      } else if (drawingEnabledRef.current) {
+        const cmd = drawCommandForKey(e);
+        if (!cmd) return;
+        e.preventDefault();
+        if (e.repeat) return;
+        if (cmd.kind === "help") {
+          setHelpOpen((open) => !open);
+          return;
+        }
+        const letter = e.key.toLowerCase();
+        if (cmd.kind === "tool" && SPRING_TOOLS[letter]) {
+          // Decided on key up: dragged while held → temporary, plain tap → switch tools
+          springRef.current = { key: letter, tool: cmd.tool, used: false };
+          setSpringTool(cmd.tool);
+          return;
+        }
+        void emit("overlay-command", cmd);
       }
     };
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      const spring = springRef.current;
+      if (!spring || e.key.toLowerCase() !== spring.key) return;
+      endSpring();
+      if (!spring.used) void emit("overlay-command", { kind: "tool", tool: spring.tool });
+    };
+
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKeyUp);
+    // Key up is lost if focus leaves while the key is held
+    window.addEventListener("blur", endSpring);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", endSpring);
+    };
   }, [undo, redo]);
+
+  // Leaving draw mode drops a held tool key and the cheat sheet
+  useEffect(() => {
+    if (drawingEnabled) return;
+    springRef.current = null;
+    setSpringTool(null);
+    setHelpOpen(false);
+  }, [drawingEnabled]);
+
+  // Remind about "?" the first few times draw mode turns on, on the cursor's monitor
+  useEffect(() => {
+    if (!drawingEnabled || hintsShown >= HINT_SHOWS) return;
+    const pos = cursor.get();
+    if (pos && !isInsideWindow(pos)) return;
+    hintsShown += 1;
+    setHintVisible(true);
+    const id = setTimeout(() => setHintVisible(false), HINT_MS);
+    return () => {
+      clearTimeout(id);
+      setHintVisible(false);
+    };
+  }, [drawingEnabled, cursor]);
 
   useEffect(() => {
     void emit("request-state");
@@ -260,6 +346,12 @@ export function Canvas() {
         if (!p.enabled) setQuickDraw(false);
       });
       await add<{ active: boolean }>("quick-draw", (p) => setQuickDraw(p.active));
+      await add<null>("help-toggle", () => {
+        // Toolbar-initiated ("?" with the toolbar focused): show it where the cursor is
+        const pos = cursor.get();
+        if (!drawingEnabledRef.current || (pos && !isInsideWindow(pos))) return;
+        setHelpOpen((open) => !open);
+      });
       await add<null>("zoom-toggle", () => {
         if (zoomActiveRef.current) {
           setZoomActive(false);
@@ -304,22 +396,34 @@ export function Canvas() {
     return () => clearTimeout(id);
   }, [notice]);
 
+  // Ink tools get a dot in the stroke's color and size instead of the system cursor
+  const showBrushCursor =
+    drawingEnabled &&
+    !textInput &&
+    !zoomActive &&
+    !helpOpen &&
+    activeTool !== "eraser" &&
+    activeTool !== "text";
+
   const cursorStyle = quickDraw
     ? "crosshair"
     : !drawingEnabled
     ? "default"
-    : tool === "text"
-      ? hoverText
-        ? "grab"
-        : "text"
-      : tool === "eraser"
-        ? "none"
-        : "crosshair";
+    : helpOpen
+      ? "default"
+      : activeTool === "text"
+        ? hoverText
+          ? "grab"
+          : "text"
+        : "none";
 
   return (
     <div
       className="fixed inset-0 w-full h-full"
       style={{ cursor: cursorStyle }}
+      onPointerDownCapture={() => {
+        if (springRef.current) springRef.current.used = true;
+      }}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
@@ -348,6 +452,11 @@ export function Canvas() {
         <CursorHalo cursor={cursor} drawing={quickDraw} inkColor={color} />
       )}
       {presenterMode && !zoomActive && <ClickRipples />}
+      {showBrushCursor && (
+        <BrushCursor cursor={cursor} tool={activeTool} color={color} lineWidth={lineWidth} />
+      )}
+      {helpOpen && <ShortcutSheet onClose={() => setHelpOpen(false)} />}
+      {hintVisible && !helpOpen && <ShortcutHint />}
       {zoomActive && (
         <ZoomView
           initialCursor={cursor.get()}

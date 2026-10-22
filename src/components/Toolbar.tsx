@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Tool, PointerMode } from "../types";
 import { PRESET_COLORS, PEN_SIZES, DEFAULT_HIGHLIGHTER_COLOR } from "../types";
+import { drawCommandForKey, type DrawCommand } from "../lib/drawKeys";
 
 const SHAPE_TOOLS: Tool[] = ["line", "rectangle", "ellipse", "arrow", "text"];
 
@@ -22,6 +23,8 @@ export function Toolbar() {
   const [highlighterColor, setHighlighterColor] = useState<string>(DEFAULT_HIGHLIGHTER_COLOR);
   const currentColor = currentTool === "highlighter" ? highlighterColor : penColor;
   const [currentSize, setCurrentSize] = useState<number>(6);
+  const currentSizeRef = useRef(currentSize);
+  currentSizeRef.current = currentSize;
   const [colorsExpanded, setColorsExpanded] = useState(false);
 
   // Refs so shortcut listeners always see latest state without re-subscribing
@@ -172,6 +175,70 @@ export function Toolbar() {
   const handleQuit = useCallback(async () => {
     await invoke("quit_app");
   }, []);
+
+  /** Single-key draw shortcuts, sent by the focused overlay or pressed in the toolbar. */
+  const applyDrawCommand = useCallback(
+    async (cmd: DrawCommand) => {
+      if (!drawingEnabledRef.current) return;
+      switch (cmd.kind) {
+        case "tool":
+          await enableAndSelect(cmd.tool);
+          break;
+        case "color": {
+          const color = PRESET_COLORS[cmd.index];
+          if (!color) return;
+          if (cmd.highlighter) {
+            setHighlighterColor(color);
+            // applyTool reads the ref before React re-renders
+            colorsRef.current = { ...colorsRef.current, highlighterColor: color };
+            await enableAndSelect("highlighter");
+          } else {
+            await applyColor(color);
+          }
+          break;
+        }
+        case "size": {
+          const idx = PEN_SIZES.indexOf(currentSizeRef.current as (typeof PEN_SIZES)[number]);
+          const next = PEN_SIZES[Math.max(0, Math.min(PEN_SIZES.length - 1, (idx < 0 ? 1 : idx) + cmd.delta))];
+          if (next !== currentSizeRef.current) await applySize(next);
+          break;
+        }
+        case "clear":
+          await handleClear();
+          break;
+        case "help":
+          await invoke("emit_to_overlay", { event: "help-toggle", payload: null });
+          break;
+      }
+    },
+    [enableAndSelect, applyColor, applySize, handleClear],
+  );
+  const applyDrawCommandRef = useRef(applyDrawCommand);
+  applyDrawCommandRef.current = applyDrawCommand;
+
+  useEffect(() => {
+    const unlisten = listen<DrawCommand>("overlay-command", (e) => {
+      void applyDrawCommandRef.current(e.payload);
+    });
+    // Same keys while the toolbar itself has focus (e.g. right after clicking a tool)
+    const onKey = (e: KeyboardEvent) => {
+      if (e.repeat || !drawingEnabledRef.current) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        void applyDrawingEnabled(false);
+        return;
+      }
+      const cmd = drawCommandForKey(e);
+      if (!cmd) return;
+      e.preventDefault();
+      void applyDrawCommandRef.current(cmd);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      unlisten.then((fn) => fn()).catch(console.error);
+    };
+  }, [applyDrawingEnabled]);
 
   const visibleColors = colorsExpanded ? PRESET_COLORS : [currentColor];
   const barRef = useRef<HTMLDivElement>(null);
