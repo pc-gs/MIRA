@@ -4,6 +4,7 @@
   "version": "0.2.0",
   "description": "Mira: lightweight screen annotation overlay for live presentations",
   "author": "Pedro Santos",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/pc-gs/MIRA.git"
@@ -18,7 +19,6 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.4",
-    "@tauri-apps/plugin-opener": "^2",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
