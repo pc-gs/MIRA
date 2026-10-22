@@ -30,6 +30,7 @@ During live calls, standups and demos, switching tools breaks your flow. Mira ke
 - Undo, redo and clear (all undoable)
 
 **Present**
+- **Presenter mode**: navigate your apps normally and **hold `⌥ Option` to draw** — release and you're back to clicking. Marks fade on their own, a soft halo keeps the cursor easy to follow, and click highlights (menu bar → Highlight Clicks) show the audience where you clicked. Ideal for tutorials and live walkthroughs.
 - **Zoom** (ZoomIt-style): freeze the screen and magnify around the cursor; scroll to change level, draw on the zoomed view, `Esc` to exit
 - **Laser pointer** with a fading trail — clicks still go to the app underneath
 - **Spotlight** ring that follows the cursor
@@ -44,6 +45,7 @@ During live calls, standups and demos, switching tools breaks your flow. Mira ke
 
 | Shortcut | Action |
 |---|---|
+| `⌃⇧P` | Presenter mode — then **hold `⌥`** to draw, release to navigate |
 | `⌃⇧D` | Toggle draw mode (pen) |
 | `⌃⇧L` | Laser pointer |
 | `⌃⇧M` | Zoom (scroll = level, drag = draw, `Esc`/right-click = exit) |

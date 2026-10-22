@@ -15,6 +15,8 @@ export function Toolbar() {
   const [toolsExpanded, setToolsExpanded] = useState(false);
   const [pointerMode, setPointerMode] = useState<PointerMode>("off");
   const [fadeEnabled, setFadeEnabled] = useState(false);
+  // Presenter mode: overlays stay click-through; hold ⌥ to draw fading marks (Rust watches the key)
+  const [presenterMode, setPresenterMode] = useState(false);
   // Highlighter keeps its own color so switching tools doesn't turn it white
   const [penColor, setPenColor] = useState<string>(PRESET_COLORS[0]);
   const [highlighterColor, setHighlighterColor] = useState<string>(DEFAULT_HIGHLIGHTER_COLOR);
@@ -28,6 +30,7 @@ export function Toolbar() {
   const pointerModeRef = useRef(pointerMode);
   const fadeEnabledRef = useRef(fadeEnabled);
   fadeEnabledRef.current = fadeEnabled;
+  const presenterModeRef = useRef(false);
   const currentToolRef = useRef(currentTool);
   currentToolRef.current = currentTool;
   const colorsRef = useRef({ penColor, highlighterColor });
@@ -69,15 +72,35 @@ export function Toolbar() {
     await invoke("emit_to_overlay", { event: "size-changed", payload: { size } });
   }, []);
 
+  const applyPresenterMode = useCallback(
+    async (enabled: boolean) => {
+      setPresenterMode(enabled);
+      presenterModeRef.current = enabled;
+      if (enabled) {
+        // Navigate freely: no draw mode, and the halo replaces laser/spotlight
+        if (drawingEnabledRef.current) await applyDrawingEnabled(false);
+        if (pointerModeRef.current !== "off") {
+          setPointerMode("off");
+          pointerModeRef.current = "off";
+          await invoke("emit_to_overlay", { event: "pointer-mode-changed", payload: { mode: "off" } });
+        }
+      }
+      await invoke("set_presenter_mode", { enabled });
+      await invoke("emit_to_overlay", { event: "presenter-mode-changed", payload: { enabled } });
+    },
+    [applyDrawingEnabled],
+  );
+
   const applyPointerMode = useCallback(
     async (mode: PointerMode) => {
       setPointerMode(mode);
       pointerModeRef.current = mode;
       // Laser is for pointing at other apps, so clicks must pass through
       if (mode === "laser" && drawingEnabledRef.current) await applyDrawingEnabled(false);
+      if (mode === "laser" && presenterModeRef.current) await applyPresenterMode(false);
       await invoke("emit_to_overlay", { event: "pointer-mode-changed", payload: { mode } });
     },
-    [applyDrawingEnabled],
+    [applyDrawingEnabled, applyPresenterMode],
   );
 
   const applyFade = useCallback(async (enabled: boolean) => {
@@ -171,6 +194,10 @@ export function Toolbar() {
         event: "fade-mode-changed",
         payload: { enabled: fadeEnabledRef.current },
       });
+      void invoke("emit_to_overlay", {
+        event: "presenter-mode-changed",
+        payload: { enabled: presenterModeRef.current },
+      });
     });
     return () => {
       unlisten.then((fn) => fn()).catch(console.error);
@@ -189,6 +216,7 @@ export function Toolbar() {
       subs.push(await listen("shortcut-spotlight", () => togglePointerMode("spotlight")));
       subs.push(await listen("shortcut-laser", () => togglePointerMode("laser")));
       subs.push(await listen("shortcut-fade", () => applyFade(!fadeEnabledRef.current)));
+      subs.push(await listen("shortcut-presenter", () => applyPresenterMode(!presenterModeRef.current)));
       subs.push(
         await listen("shortcut-draw-toggle", () => {
           if (!drawingEnabledRef.current && pointerModeRef.current === "laser") {
@@ -204,7 +232,7 @@ export function Toolbar() {
       );
     })();
     return () => subs.forEach((fn) => fn());
-  }, [applyOverlayVisible, applyDrawingEnabled, applyPointerMode, togglePointerMode, applyFade]);
+  }, [applyOverlayVisible, applyDrawingEnabled, applyPointerMode, togglePointerMode, applyFade, applyPresenterMode]);
 
   // Persist toolbar drag position
   useEffect(() => {
@@ -320,6 +348,15 @@ export function Toolbar() {
       </Group>
 
       <Group>
+        <Btn
+          active={presenterMode}
+          tone="green"
+          disabled={off}
+          onClick={() => void applyPresenterMode(!presenterMode)}
+          title="Presenter mode (⌃⇧P) — navigate freely, hold ⌥ to draw"
+        >
+          <PresenterIcon />
+        </Btn>
         <Btn
           active={pointerMode === "laser"}
           tone="red"
@@ -457,12 +494,13 @@ function Group({ children }: { children: React.ReactNode }) {
   );
 }
 
-type Tone = "blue" | "red" | "violet" | "neutral" | "danger-hover";
+type Tone = "blue" | "red" | "violet" | "green" | "neutral" | "danger-hover";
 
 const ACTIVE_TONES: Record<Exclude<Tone, "danger-hover">, { bg: string; glow: string }> = {
   blue: { bg: "#0a84ff", glow: "rgba(10,132,255,0.45)" },
   red: { bg: "#ff453a", glow: "rgba(255,69,58,0.45)" },
   violet: { bg: "#8e5cf7", glow: "rgba(142,92,247,0.45)" },
+  green: { bg: "#30d158", glow: "rgba(48,209,88,0.45)" },
   // For on-by-default toggles (overlay visible): present but quiet
   neutral: { bg: "rgba(255,255,255,0.16)", glow: "rgba(0,0,0,0)" },
 };
@@ -679,6 +717,17 @@ function FadeIcon() {
       <path d="M3 16c2-4 4.5-5 6.5-2.5" />
       <path d="M12 14.5c1.5 1.5 3 1 4.2-.8" opacity="0.6" />
       <path d="M18.6 11.2 19 10.5M21 8.5l.1-.2" opacity="0.35" />
+    </Icon>
+  );
+}
+
+function PresenterIcon() {
+  return (
+    <Icon>
+      <path d="M2 4h20" />
+      <path d="M3.5 4v9a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2V4" />
+      <path d="m8 21 4-6 4 6" />
+      <path d="m10 9.5 2-2 2 2" opacity="0.7" />
     </Icon>
   );
 }

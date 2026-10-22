@@ -6,6 +6,8 @@ import { Spotlight } from "./Spotlight";
 import { LaserPointer } from "./LaserPointer";
 import { ZoomView } from "./ZoomView";
 import { TextInput } from "./TextInput";
+import { CursorHalo } from "./CursorHalo";
+import { ClickRipples } from "./ClickRipples";
 import type { Tool, Point, Stroke, PointerMode } from "../types";
 
 // Classic red laser: stays visible on light and dark slides regardless of pen color
@@ -38,6 +40,9 @@ export function Canvas() {
   const [lineWidth, setLineWidth] = useState(6);
   const [pointerMode, setPointerMode] = useState<PointerMode>("off");
   const [fadeEnabled, setFadeEnabled] = useState(false);
+  const [presenterMode, setPresenterMode] = useState(false);
+  // ⌥ held in presenter mode: Rust turned off click-through so this overlay can draw
+  const [quickDrawRaw, setQuickDraw] = useState(false);
   const [textInput, setTextInput] = useState<ActiveTextInput | null>(null);
   const [hoverText, setHoverText] = useState(false);
   const [zoomActive, setZoomActive] = useState(false);
@@ -50,6 +55,12 @@ export function Canvas() {
   drawingEnabledRef.current = drawingEnabled;
   const zoomActiveRef = useRef(zoomActive);
   zoomActiveRef.current = zoomActive;
+
+  // Quick-draw only counts in presenter mode and when regular draw mode is off
+  const quickDraw = presenterMode && quickDrawRaw && !drawingEnabled;
+  const drawingActive = drawingEnabled || quickDraw;
+  // Quick-draw marks with ink tools; eraser/text fall back to the pen
+  const effectiveTool: Tool = quickDraw && (tool === "eraser" || tool === "text") ? "pen" : tool;
 
   const {
     hlCanvasRef,
@@ -69,9 +80,10 @@ export function Canvas() {
   } = useDrawing({
     color,
     lineWidth,
-    enabled: drawingEnabled && !textInput && !zoomActive,
-    tool,
-    fade: fadeEnabled,
+    enabled: drawingActive && !textInput && !zoomActive,
+    tool: effectiveTool,
+    // Presenter marks always fade so the content stays clean
+    fade: fadeEnabled || quickDraw,
   });
 
   // While editing, hide the underlying stroke so the input is the only visible text
@@ -243,6 +255,11 @@ export function Canvas() {
       await add<{ size: number }>("size-changed", (p) => setLineWidth(p.size));
       await add<{ mode: PointerMode }>("pointer-mode-changed", (p) => setPointerMode(p.mode));
       await add<{ enabled: boolean }>("fade-mode-changed", (p) => setFadeEnabled(p.enabled));
+      await add<{ enabled: boolean }>("presenter-mode-changed", (p) => {
+        setPresenterMode(p.enabled);
+        if (!p.enabled) setQuickDraw(false);
+      });
+      await add<{ active: boolean }>("quick-draw", (p) => setQuickDraw(p.active));
       await add<null>("zoom-toggle", () => {
         if (zoomActiveRef.current) {
           setZoomActive(false);
@@ -287,7 +304,9 @@ export function Canvas() {
     return () => clearTimeout(id);
   }, [notice]);
 
-  const cursorStyle = !drawingEnabled
+  const cursorStyle = quickDraw
+    ? "crosshair"
+    : !drawingEnabled
     ? "default"
     : tool === "text"
       ? hoverText
@@ -320,11 +339,15 @@ export function Canvas() {
         style={{
           touchAction: "none",
           // Text interactions are handled on the parent; avoid double-handling
-          pointerEvents: tool === "text" ? "none" : "auto",
+          pointerEvents: effectiveTool === "text" ? "none" : "auto",
         }}
       />
       {pointerMode === "spotlight" && <Spotlight cursor={cursor} />}
       {pointerMode === "laser" && !zoomActive && <LaserPointer cursor={cursor} color={LASER_COLOR} />}
+      {presenterMode && pointerMode === "off" && !zoomActive && (
+        <CursorHalo cursor={cursor} drawing={quickDraw} inkColor={color} />
+      )}
+      {presenterMode && !zoomActive && <ClickRipples />}
       {zoomActive && (
         <ZoomView
           initialCursor={cursor.get()}

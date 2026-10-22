@@ -334,8 +334,8 @@ export function useDrawing({ color, lineWidth, enabled, tool, fade }: UseDrawing
 
   /** Finished drawing gesture: permanent (undoable) or ephemeral in fade mode. */
   const addFinishedStroke = useCallback(
-    (stroke: Stroke) => {
-      if (fadeRef.current) {
+    (stroke: Stroke, ephemeral: boolean = fadeRef.current) => {
+      if (ephemeral) {
         ephemeralRef.current.push({ stroke, createdAt: performance.now() });
         runFadeLoop();
       } else {
@@ -388,6 +388,7 @@ export function useDrawing({ color, lineWidth, enabled, tool, fade }: UseDrawing
     if (!fgCanvas || !enabled) return;
 
     const eraseRadius = () => lineWidth * 3 + 12;
+    let gestureFade = fadeRef.current;
 
     const eraseAtPoint = (pt: Point) => {
       const radius = eraseRadius();
@@ -446,6 +447,9 @@ export function useDrawing({ color, lineWidth, enabled, tool, fade }: UseDrawing
       if (tool === "text") return;
 
       isDrawingRef.current = true;
+      // Decide fade per gesture: fade may flip off before the gesture is finished
+      // (e.g. releasing ⌥ in presenter mode ends quick-draw and its forced fade together)
+      gestureFade = fadeRef.current;
       eraseHistoryPushedRef.current = false;
       fgCanvas.setPointerCapture(e.pointerId);
       const rect = fgCanvas.getBoundingClientRect();
@@ -529,45 +533,57 @@ export function useDrawing({ color, lineWidth, enabled, tool, fade }: UseDrawing
       }
     };
 
-    const onUp = (e: PointerEvent) => {
-      if (!isDrawingRef.current) return;
+    /**
+     * Finish the in-progress gesture. `end` is the release point when known; without it
+     * (gesture interrupted) the last live preview position is used.
+     */
+    const finishGesture = (end?: Point, shiftKey = false) => {
       isDrawingRef.current = false;
 
       if (tool === "eraser") {
         eraseHistoryPushedRef.current = false;
-        // Keep showing the (idle) ring where the pointer is
-        const rect = fgCanvas.getBoundingClientRect();
-        const fgCtx = getFgCtx();
-        if (fgCtx) drawEraserCursor(fgCtx, { x: e.clientX - rect.left, y: e.clientY - rect.top });
         return;
       }
 
       if (tool === "pen" || tool === "highlighter") {
         const points = currentPointsRef.current;
         if (points.length > 1) {
-          addFinishedStroke({
-            id: newStrokeId(tool),
-            tool,
-            points: [...points],
-            color,
-            width: lineWidth,
-          });
+          addFinishedStroke(
+            {
+              id: newStrokeId(tool),
+              tool,
+              points: [...points],
+              color,
+              width: lineWidth,
+            },
+            gestureFade,
+          );
         }
       } else if (previewStrokeRef.current?.start) {
-        const rect = fgCanvas.getBoundingClientRect();
-        let pt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-        if (e.shiftKey) {
-          pt = applyShiftConstraint(previewStrokeRef.current.start, pt, tool);
-        }
         const { start } = previewStrokeRef.current;
+        let pt = end ?? previewStrokeRef.current.end ?? start;
+        if (end && shiftKey) pt = applyShiftConstraint(start, pt, tool);
         if (Math.abs(pt.x - start.x) > 1 || Math.abs(pt.y - start.y) > 1) {
-          addFinishedStroke({ ...previewStrokeRef.current, end: pt });
+          addFinishedStroke({ ...previewStrokeRef.current, end: pt }, gestureFade);
         }
       }
 
       currentPointsRef.current = [];
       previewStrokeRef.current = null;
       clearFg();
+    };
+
+    const onUp = (e: PointerEvent) => {
+      if (!isDrawingRef.current) return;
+      const rect = fgCanvas.getBoundingClientRect();
+      const pt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      finishGesture(pt, e.shiftKey);
+
+      if (tool === "eraser") {
+        // Keep showing the (idle) ring where the pointer is
+        const fgCtx = getFgCtx();
+        if (fgCtx) drawEraserCursor(fgCtx, pt);
+      }
     };
 
     fgCanvas.addEventListener("pointerdown", onDown);
@@ -579,6 +595,10 @@ export function useDrawing({ color, lineWidth, enabled, tool, fade }: UseDrawing
     };
     fgCanvas.addEventListener("pointerleave", onLeave);
     return () => {
+      // Drawing got disabled or the tool/style changed mid-gesture (e.g. ⌥ released
+      // while dragging in presenter mode): commit what was drawn instead of leaving
+      // a stuck preview and a half-open gesture.
+      if (isDrawingRef.current) finishGesture();
       fgCanvas.removeEventListener("pointerleave", onLeave);
       // Don't leave a stale eraser ring behind when switching tools / leaving draw mode
       if (tool === "eraser") clearFg();

@@ -4,10 +4,18 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindo
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, fs, path::PathBuf, sync::Mutex, thread, time::Duration};
+use std::{
+    collections::HashSet,
+    fs,
+    path::PathBuf,
+    sync::atomic::{AtomicBool, Ordering},
+    sync::Mutex,
+    thread,
+    time::Duration,
+};
 
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSStatusWindowLevel, NSWindow, NSWindowSharingType};
+use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSStatusWindowLevel, NSWindow, NSWindowSharingType};
 #[cfg(target_os = "macos")]
 use objc2::rc::Retained;
 #[cfg(target_os = "macos")]
@@ -35,6 +43,32 @@ struct ZoomState {
     shown_for_zoom: Mutex<HashSet<String>>,
 }
 
+/// Presenter mode: overlays stay click-through, holding ⌥ temporarily captures the mouse
+/// ("quick draw"), and optional click highlights are emitted to overlays.
+struct PresenterState {
+    enabled: AtomicBool,
+    click_highlight: AtomicBool,
+    /// Last value passed to `set_overlay_passthrough` (true = draw mode off).
+    draw_passthrough: AtomicBool,
+    quick_draw_active: AtomicBool,
+}
+
+impl Default for PresenterState {
+    fn default() -> Self {
+        Self {
+            enabled: AtomicBool::new(false),
+            click_highlight: AtomicBool::new(false),
+            draw_passthrough: AtomicBool::new(true),
+            quick_draw_active: AtomicBool::new(false),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+struct QuickDrawPayload {
+    active: bool,
+}
+
 #[derive(Debug, Clone)]
 struct OverlayWindowInfo {
     label: String,
@@ -47,7 +81,14 @@ struct OverlayWindowInfo {
 
 /// Toggle pass-through on the overlay window.
 #[tauri::command]
-fn set_overlay_passthrough(app: AppHandle, pass_through: bool) -> Result<(), String> {
+fn set_overlay_passthrough(
+    app: AppHandle,
+    presenter: tauri::State<'_, PresenterState>,
+    pass_through: bool,
+) -> Result<(), String> {
+    presenter.draw_passthrough.store(pass_through, Ordering::SeqCst);
+    // Draw mode taking over (or leaving) supersedes any ⌥ quick draw in progress
+    end_quick_draw(&app, &presenter);
     for label in overlay_labels(&app) {
         if let Some(overlay) = app.get_webview_window(&label) {
             overlay
@@ -187,6 +228,14 @@ fn capture_window_monitor(_window: &WebviewWindow) -> Result<(u32, u32, Vec<u8>)
 }
 
 #[tauri::command]
+fn set_presenter_mode(app: AppHandle, presenter: tauri::State<'_, PresenterState>, enabled: bool) {
+    presenter.enabled.store(enabled, Ordering::SeqCst);
+    if !enabled {
+        end_quick_draw(&app, &presenter);
+    }
+}
+
+#[tauri::command]
 fn quit_app(app: AppHandle) {
     app.exit(0);
 }
@@ -272,8 +321,10 @@ pub fn run() {
             set_toolbar_size,
             begin_zoom,
             end_zoom,
+            set_presenter_mode,
         ])
         .manage(ZoomState::default())
+        .manage(PresenterState::default())
         .setup(|app| {
             setup_windows(app)?;
             if let Err(e) = setup_tray(app) {
@@ -376,6 +427,7 @@ fn register_shortcuts(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Er
         Shortcut::new(ctrl_shift, Code::KeyL), // laser pointer
         Shortcut::new(ctrl_shift, Code::KeyM), // zoom
         Shortcut::new(ctrl_shift, Code::KeyH), // show/hide toolbar
+        Shortcut::new(ctrl_shift, Code::KeyP), // presenter mode
         Shortcut::new(ctrl_shift, Code::KeyF), // fading ink
     ])?;
     Ok(())
@@ -434,6 +486,8 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let draw_item = MenuItem::with_id(app, "draw", "Draw Mode (⌃⇧D)", true, None::<&str>)?;
     let laser_item = MenuItem::with_id(app, "laser", "Laser (⌃⇧L)", true, None::<&str>)?;
     let spotlight_item = MenuItem::with_id(app, "spotlight", "Spotlight (⌃⇧S)", true, None::<&str>)?;
+    let presenter_item = MenuItem::with_id(app, "presenter", "Presenter Mode (⌃⇧P)", true, None::<&str>)?;
+    let click_item = CheckMenuItem::with_id(app, "clicks", "Highlight Clicks", true, false, None::<&str>)?;
     let zoom_item = MenuItem::with_id(app, "zoom", "Zoom (⌃⇧M)", true, None::<&str>)?;
     let fade_item = MenuItem::with_id(app, "fade", "Fading Ink (⌃⇧F)", true, None::<&str>)?;
     let login_item = CheckMenuItem::with_id(
@@ -454,6 +508,8 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             &draw_item,
             &laser_item,
             &spotlight_item,
+            &presenter_item,
+            &click_item,
             &zoom_item,
             &fade_item,
             &PredefinedMenuItem::separator(app)?,
@@ -464,6 +520,7 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     let login_item_handle = login_item.clone();
+    let click_item_handle = click_item.clone();
     let mut builder = TrayIconBuilder::with_id("mira")
         .tooltip("Mira")
         .menu(&menu)
@@ -481,6 +538,16 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             }
             "spotlight" => {
                 let _ = app.emit_to("toolbar", "shortcut-spotlight", ());
+            }
+            "presenter" => {
+                let _ = app.emit_to("toolbar", "shortcut-presenter", ());
+            }
+            "clicks" => {
+                let presenter = app.state::<PresenterState>();
+                let enabled = !presenter.click_highlight.load(Ordering::SeqCst);
+                presenter.click_highlight.store(enabled, Ordering::SeqCst);
+                // The menu toggles its checkmark on click; resync with the real state
+                let _ = click_item_handle.set_checked(enabled);
             }
             "zoom" => emit_zoom_toggle(app),
             "fade" => {
@@ -547,6 +614,9 @@ fn handle_shortcut(app: &AppHandle, shortcut: &Shortcut) {
         }
         Code::KeyM => emit_zoom_toggle(app),
         Code::KeyH => toggle_toolbar_visibility(app),
+        Code::KeyP => {
+            let _ = app.emit_to("toolbar", "shortcut-presenter", ());
+        }
         Code::KeyF => {
             let _ = app.emit_to("toolbar", "shortcut-fade", ());
         }
@@ -592,12 +662,64 @@ fn default_toolbar_position(work_area: &tauri::PhysicalRect<i32, u32>, scale: f6
     (x, y)
 }
 
+/// Make overlays capture the mouse while ⌥ is held (presenter mode). Acts only on the
+/// inactive→active transition.
+fn begin_quick_draw(app: &AppHandle, presenter: &PresenterState) {
+    if presenter
+        .quick_draw_active
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+    for label in overlay_labels(app) {
+        if let Some(overlay) = app.get_webview_window(&label) {
+            let _ = overlay.set_ignore_cursor_events(false);
+        }
+        let _ = app.emit_to(&label, "quick-draw", QuickDrawPayload { active: true });
+    }
+}
+
+/// Leave quick draw: tell overlays first (so they finish the stroke), then restore the
+/// click-through state that draw mode asked for. Acts only on the active→inactive transition.
+fn end_quick_draw(app: &AppHandle, presenter: &PresenterState) {
+    if !presenter.quick_draw_active.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    let pass_through = presenter.draw_passthrough.load(Ordering::SeqCst);
+    for label in overlay_labels(app) {
+        let _ = app.emit_to(&label, "quick-draw", QuickDrawPayload { active: false });
+        if let Some(overlay) = app.get_webview_window(&label) {
+            let _ = overlay.set_ignore_cursor_events(pass_through);
+        }
+    }
+}
+
+/// Global input state for presenter mode: (⌥ held without ⌘/⌃, left mouse button down).
+/// `NSEvent`'s class-level `modifierFlags` / `pressedMouseButtons` report the current
+/// hardware state, need no Accessibility permission, and are not main-thread-only.
+#[cfg(target_os = "macos")]
+fn read_presenter_input() -> (bool, bool) {
+    let flags = NSEvent::modifierFlags_class();
+    let option_only = flags.contains(NSEventModifierFlags::Option)
+        && !flags.contains(NSEventModifierFlags::Command)
+        && !flags.contains(NSEventModifierFlags::Control);
+    let left_down = NSEvent::pressedMouseButtons() & 1 == 1;
+    (option_only, left_down)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_presenter_input() -> (bool, bool) {
+    (false, false)
+}
+
 fn start_cursor_polling(app: AppHandle, mut overlays: Vec<OverlayWindowInfo>) {
     let app_handle = app.clone();
     thread::spawn(move || {
         let mut last_monitor_check = std::time::Instant::now();
         let mut last = vec![(f64::MIN, f64::MIN); overlays.len()];
         let mut next_overlay_id = overlays.len() + 1;
+        let mut left_was_down = false;
 
         loop {
             // Dynamically check for new monitors every 2 seconds
@@ -645,6 +767,24 @@ fn start_cursor_polling(app: AppHandle, mut overlays: Vec<OverlayWindowInfo>) {
                 }
             }
 
+            // Presenter mode: ⌥ quick draw + click highlights
+            let presenter = app_handle.state::<PresenterState>();
+            let (option_held, left_down) = read_presenter_input();
+            let presenting = presenter.enabled.load(Ordering::SeqCst);
+            let want_quick_draw =
+                presenting && option_held && presenter.draw_passthrough.load(Ordering::SeqCst);
+            if want_quick_draw {
+                begin_quick_draw(&app_handle, &presenter);
+            } else {
+                end_quick_draw(&app_handle, &presenter);
+            }
+            let clicked = left_down && !left_was_down;
+            left_was_down = left_down;
+            let emit_click = clicked
+                && presenting
+                && presenter.click_highlight.load(Ordering::SeqCst)
+                && !presenter.quick_draw_active.load(Ordering::SeqCst);
+
             if let Ok(pos) = app_handle.cursor_position() {
                 for (idx, overlay) in overlays.iter().enumerate() {
                     // Convert screen-physical coords to this overlay's logical coords.
@@ -653,6 +793,9 @@ fn start_cursor_polling(app: AppHandle, mut overlays: Vec<OverlayWindowInfo>) {
                     if (x - last[idx].0).abs() > 0.25 || (y - last[idx].1).abs() > 0.25 {
                         last[idx] = (x, y);
                         let _ = app_handle.emit_to(&overlay.label, "cursor-moved", CursorMovedPayload { x, y });
+                    }
+                    if emit_click {
+                        let _ = app_handle.emit_to(&overlay.label, "mouse-clicked", CursorMovedPayload { x, y });
                     }
                 }
             }
