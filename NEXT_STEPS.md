@@ -32,6 +32,16 @@ Status: merged to `main`; builds on macOS CI. Waiting for hands-on testing on a 
 
 ---
 
+## v1.2 — Presenter mode
+
+Status: implemented, pending testing on macOS.
+
+- **Hold ⌥ to draw** — with presenter mode on (`Ctrl+Shift+P`), the overlay stays click-through; holding Option switches the mouse to drawing (fading ink), releasing switches back instantly.
+- **Cursor halo** and optional **click highlights** (tray → Highlight Clicks) for tutorials.
+- **Eraser** — the eraser ring is now visible while hovering (it used to vanish).
+
+---
+
 ## Pending
 
 Known gaps from the v1.1 review, roughly in priority order.
@@ -39,6 +49,7 @@ Known gaps from the v1.1 review, roughly in priority order.
 ### Needs a Mac (can't be verified in CI)
 - **Hands-on test pass** — permissions prompts (Accessibility, Screen Recording), vibrancy/rounded corners on the toolbar, tray menu, Open at Login, and a real video call sharing the entire screen.
 - **Zoom capture performance** — the snapshot travels as raw RGBA over IPC (tens of MB on 5K displays). If entering zoom feels slow, switch to JPEG encoding in `begin_zoom`.
+- **Presenter mode feel** — verify ⌥ responsiveness (16 ms polling) and that typing ⌥ characters (e.g. `@` on the Portuguese layout) doesn't get in the way while presenter mode is on.
 - **Highlighter strength on dark slides** — 40% opacity can look muted on dark backgrounds; consider 50–55% (`HIGHLIGHTER_ALPHA`).
 
 ### Distribution
