@@ -138,6 +138,15 @@ interface UseDrawingOptions {
   tool: Tool;
   /** Fading ink: finished strokes skip history and disappear after a few seconds. */
   fade: boolean;
+  /** Called after every change to the undo/redo stacks. */
+  onHistoryChange?: () => void;
+}
+
+export interface HistoryTimes {
+  /** When the entry `undo` would revert was made (`Date.now()`), null if nothing to undo. */
+  undoAt: number | null;
+  /** When the entry `redo` would restore was undone, null if nothing to redo. */
+  redoAt: number | null;
 }
 
 const MAX_HISTORY = 80;
@@ -150,13 +159,19 @@ interface EphemeralStroke {
   createdAt: number;
 }
 
-export function useDrawing({ color, lineWidth, enabled, tool, fade }: UseDrawingOptions) {
+export function useDrawing({ color, lineWidth, enabled, tool, fade, onHistoryChange }: UseDrawingOptions) {
   const hlCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const bgCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const fgCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const strokesRef = useRef<Stroke[]>([]);
   const pastRef = useRef<Stroke[][]>([]);
   const futureRef = useRef<Stroke[][]>([]);
+  // Wall-clock time of each stack entry (comparable across overlay windows), so a
+  // global undo/redo can pick the monitor that has the latest action
+  const pastAtRef = useRef<number[]>([]);
+  const futureAtRef = useRef<number[]>([]);
+  const onHistoryChangeRef = useRef(onHistoryChange);
+  onHistoryChangeRef.current = onHistoryChange;
   const currentPointsRef = useRef<Point[]>([]);
   const previewStrokeRef = useRef<Stroke | null>(null);
   const isDrawingRef = useRef(false);
@@ -166,6 +181,19 @@ export function useDrawing({ color, lineWidth, enabled, tool, fade }: UseDrawing
   const hiddenIdRef = useRef<string | null>(null);
   const fadeRef = useRef(fade);
   fadeRef.current = fade;
+
+  /** Record a new undoable step (`snapshot` = strokes before it); clears redo. */
+  const pushPast = useCallback((snapshot: Stroke[]) => {
+    pastRef.current.push(snapshot);
+    pastAtRef.current.push(Date.now());
+    if (pastRef.current.length > MAX_HISTORY) {
+      pastRef.current.shift();
+      pastAtRef.current.shift();
+    }
+    futureRef.current = [];
+    futureAtRef.current = [];
+    onHistoryChangeRef.current?.();
+  }, []);
 
   const getBgCtx = useCallback(() => bgCanvasRef.current?.getContext("2d") ?? null, []);
   const getFgCtx = useCallback(() => fgCanvasRef.current?.getContext("2d") ?? null, []);
@@ -306,13 +334,11 @@ export function useDrawing({ color, lineWidth, enabled, tool, fade }: UseDrawing
   /** Push current strokes onto the undo stack, then apply `next`. */
   const commit = useCallback(
     (next: Stroke[]) => {
-      pastRef.current.push(cloneStrokes(strokesRef.current));
-      if (pastRef.current.length > MAX_HISTORY) pastRef.current.shift();
-      futureRef.current = [];
+      pushPast(cloneStrokes(strokesRef.current));
       strokesRef.current = next;
       replayStrokes(next);
     },
-    [replayStrokes],
+    [pushPast, replayStrokes],
   );
 
   /** Animate fading strokes; the loop stops once none are left. */
@@ -396,9 +422,7 @@ export function useDrawing({ color, lineWidth, enabled, tool, fade }: UseDrawing
       const next = prev.filter((s) => !strokeHitsPoint(s, pt, radius));
       if (next.length === prev.length) return;
       if (!eraseHistoryPushedRef.current) {
-        pastRef.current.push(cloneStrokes(prev));
-        if (pastRef.current.length > MAX_HISTORY) pastRef.current.shift();
-        futureRef.current = [];
+        pushPast(cloneStrokes(prev));
         eraseHistoryPushedRef.current = true;
       }
       strokesRef.current = next;
@@ -607,24 +631,31 @@ export function useDrawing({ color, lineWidth, enabled, tool, fade }: UseDrawing
       fgCanvas.removeEventListener("pointerup", onUp);
       fgCanvas.removeEventListener("pointercancel", onUp);
     };
-  }, [enabled, color, lineWidth, tool, getFgCtx, drawStroke, replayStrokes, addFinishedStroke, clearFg]);
+  }, [enabled, color, lineWidth, tool, getFgCtx, drawStroke, replayStrokes, addFinishedStroke, clearFg, pushPast]);
 
   const undo = useCallback(() => {
     if (!pastRef.current.length) return;
     const previous = pastRef.current.pop()!;
+    pastAtRef.current.pop();
     futureRef.current.push(cloneStrokes(strokesRef.current));
+    futureAtRef.current.push(Date.now());
     strokesRef.current = previous;
     replayStrokes(previous);
     clearFg();
+    onHistoryChangeRef.current?.();
   }, [replayStrokes, clearFg]);
 
   const redo = useCallback(() => {
     if (!futureRef.current.length) return;
     const next = futureRef.current.pop()!;
+    futureAtRef.current.pop();
     pastRef.current.push(cloneStrokes(strokesRef.current));
+    // The restored step is now the most recent action
+    pastAtRef.current.push(Date.now());
     strokesRef.current = next;
     replayStrokes(next);
     clearFg();
+    onHistoryChangeRef.current?.();
   }, [replayStrokes, clearFg]);
 
   const clear = useCallback(() => {
@@ -678,15 +709,13 @@ export function useDrawing({ color, lineWidth, enabled, tool, fade }: UseDrawing
    */
   const commitMoveText = useCallback(
     (before: Stroke[], id: string, position: Point) => {
-      pastRef.current.push(cloneStrokes(before));
-      if (pastRef.current.length > MAX_HISTORY) pastRef.current.shift();
-      futureRef.current = [];
+      pushPast(cloneStrokes(before));
       strokesRef.current = strokesRef.current.map((s) =>
         s.id === id ? { ...s, position } : s,
       );
       replayStrokes(strokesRef.current);
     },
-    [replayStrokes],
+    [pushPast, replayStrokes],
   );
 
   const deleteStroke = useCallback(
@@ -721,6 +750,14 @@ export function useDrawing({ color, lineWidth, enabled, tool, fade }: UseDrawing
     [getBgCtx],
   );
 
+  const getHistoryTimes = useCallback(
+    (): HistoryTimes => ({
+      undoAt: pastAtRef.current[pastAtRef.current.length - 1] ?? null,
+      redoAt: futureAtRef.current[futureAtRef.current.length - 1] ?? null,
+    }),
+    [],
+  );
+
   const getStrokesSnapshot = useCallback(() => cloneStrokes(strokesRef.current), []);
 
   /** Hide a stroke while its inline editor is open (avoids double-draw). */
@@ -743,6 +780,7 @@ export function useDrawing({ color, lineWidth, enabled, tool, fade }: UseDrawing
     deleteStroke,
     findTextStrokeAt,
     getStrokesSnapshot,
+    getHistoryTimes,
     setHiddenStrokeId,
   };
 }

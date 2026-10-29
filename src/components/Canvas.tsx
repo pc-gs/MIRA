@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { listen, emit } from "@tauri-apps/api/event";
-import { useDrawing, HIGHLIGHTER_ALPHA } from "../hooks/useDrawing";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useDrawing, HIGHLIGHTER_ALPHA, type HistoryTimes } from "../hooks/useDrawing";
 import { useCursorStream, isInsideWindow } from "../hooks/useCursorStream";
 import { Spotlight } from "./Spotlight";
 import { LaserPointer } from "./LaserPointer";
@@ -43,6 +44,19 @@ interface SpringKey {
   used: boolean;
 }
 
+// Global undo/redo acts on the overlay(s) with the latest step; steps this close
+// together count as one (a clear lands on every monitor within a few ms)
+const HISTORY_GROUP_MS = 150;
+const windowLabel = getCurrentWindow().label;
+
+/** Whether this overlay's step at `mine` is the latest among all overlays' steps. */
+function isLatestStep(mine: number | null, others: Iterable<number | null>): boolean {
+  if (mine === null) return false;
+  let latest = mine;
+  for (const t of others) if (t !== null && t > latest) latest = t;
+  return mine >= latest - HISTORY_GROUP_MS;
+}
+
 // The "? for shortcuts" pill only shows the first few times draw mode turns on
 const HINT_SHOWS = 3;
 const HINT_MS = 2600;
@@ -68,6 +82,12 @@ export function Canvas() {
   const springRef = useRef<SpringKey | null>(null);
 
   const textDragRef = useRef<TextDrag | null>(null);
+  // Latest undo/redo times announced by every overlay (this one included), by label
+  const peerHistoryRef = useRef(new Map<string, HistoryTimes>());
+  const getHistoryTimesRef = useRef<() => HistoryTimes>(() => ({ undoAt: null, redoAt: null }));
+  const announceHistory = useCallback(() => {
+    void emit("history-meta", { label: windowLabel, ...getHistoryTimesRef.current() });
+  }, []);
   const cursor = useCursorStream();
 
   const drawingEnabledRef = useRef(drawingEnabled);
@@ -100,6 +120,7 @@ export function Canvas() {
     deleteStroke,
     findTextStrokeAt,
     getStrokesSnapshot,
+    getHistoryTimes,
     setHiddenStrokeId,
   } = useDrawing({
     color,
@@ -108,7 +129,9 @@ export function Canvas() {
     tool: effectiveTool,
     // Presenter marks always fade so the content stays clean
     fade: fadeEnabled || quickDraw,
+    onHistoryChange: announceHistory,
   });
+  getHistoryTimesRef.current = getHistoryTimes;
 
   // While editing, hide the underlying stroke so the input is the only visible text
   useEffect(() => {
@@ -365,9 +388,26 @@ export function Canvas() {
         }
       });
 
+      await add<HistoryTimes & { label: string }>("history-meta", ({ label, undoAt, redoAt }) => {
+        peerHistoryRef.current.set(label, { undoAt, redoAt });
+      });
+      await add<{ label: string }>("overlay-removed", ({ label }) => {
+        peerHistoryRef.current.delete(label);
+      });
+
+      // Each overlay has its own history: undo/redo only where the latest step was
+      // made, instead of reverting one step on every monitor
+      const others = (key: keyof HistoryTimes) =>
+        [...peerHistoryRef.current]
+          .filter(([label]) => label !== windowLabel)
+          .map(([, times]) => times[key]);
       const uClear = await listen("shortcut-clear", () => clear());
-      const uUndo = await listen("shortcut-undo", () => undo());
-      const uRedo = await listen("shortcut-redo", () => redo());
+      const uUndo = await listen("shortcut-undo", () => {
+        if (isLatestStep(getHistoryTimesRef.current().undoAt, others("undoAt"))) undo();
+      });
+      const uRedo = await listen("shortcut-redo", () => {
+        if (isLatestStep(getHistoryTimesRef.current().redoAt, others("redoAt"))) redo();
+      });
       if (cancelled) {
         uClear();
         uUndo();

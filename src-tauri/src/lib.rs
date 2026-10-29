@@ -74,7 +74,42 @@ struct OverlayWindowInfo {
     label: String,
     monitor_x: i32,
     monitor_y: i32,
+    monitor_w: u32,
+    monitor_h: u32,
     scale: f64,
+    /// Consecutive monitor checks that didn't find this overlay's monitor.
+    missing_checks: u8,
+}
+
+impl OverlayWindowInfo {
+    fn for_monitor(label: String, monitor: &tauri::Monitor) -> Self {
+        Self {
+            label,
+            monitor_x: monitor.position().x,
+            monitor_y: monitor.position().y,
+            monitor_w: monitor.size().width,
+            monitor_h: monitor.size().height,
+            scale: monitor.scale_factor(),
+            missing_checks: 0,
+        }
+    }
+
+    fn matches(&self, monitor: &tauri::Monitor) -> bool {
+        monitor_key(monitor) == (self.monitor_x, self.monitor_y, self.monitor_w, self.monitor_h)
+            && (monitor.scale_factor() - self.scale).abs() < f64::EPSILON
+    }
+}
+
+/// Last overlay visibility asked for by the toolbar (⌃⇧X), so overlays created for
+/// hot-plugged monitors start in the same state as the others.
+struct OverlayState {
+    visible: AtomicBool,
+}
+
+impl Default for OverlayState {
+    fn default() -> Self {
+        Self { visible: AtomicBool::new(true) }
+    }
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────
@@ -122,7 +157,12 @@ fn focus_overlay_under_cursor(app: &AppHandle) {
 
 /// Show or hide the overlay window.
 #[tauri::command]
-fn set_overlay_visible(app: AppHandle, visible: bool) -> Result<(), String> {
+fn set_overlay_visible(
+    app: AppHandle,
+    state: tauri::State<'_, OverlayState>,
+    visible: bool,
+) -> Result<(), String> {
+    state.visible.store(visible, Ordering::SeqCst);
     for label in overlay_labels(&app) {
         if let Some(overlay) = app.get_webview_window(&label) {
             if visible {
@@ -345,6 +385,7 @@ pub fn run() {
         ])
         .manage(ZoomState::default())
         .manage(PresenterState::default())
+        .manage(OverlayState::default())
         .setup(|app| {
             setup_windows(app)?;
             if let Err(e) = setup_tray(app) {
@@ -374,12 +415,7 @@ fn setup_windows(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
     let work_area = primary_monitor.work_area();
     let scale = primary_monitor.scale_factor();
 
-    let mut overlays = vec![OverlayWindowInfo {
-        label: "overlay".to_string(),
-        monitor_x: primary_monitor.position().x,
-        monitor_y: primary_monitor.position().y,
-        scale,
-    }];
+    let mut overlays = vec![OverlayWindowInfo::for_monitor("overlay".to_string(), &primary_monitor)];
 
     configure_overlay_for_monitor(&primary_overlay, &primary_monitor)?;
 
@@ -403,12 +439,7 @@ fn setup_windows(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
             .visible(false)
             .build()?;
         configure_overlay_for_monitor(&overlay, &monitor)?;
-        overlays.push(OverlayWindowInfo {
-            label,
-            monitor_x: monitor.position().x,
-            monitor_y: monitor.position().y,
-            scale: monitor.scale_factor(),
-        });
+        overlays.push(OverlayWindowInfo::for_monitor(label, &monitor));
     }
 
     start_cursor_polling(app.handle().clone(), overlays);
@@ -421,8 +452,27 @@ fn setup_windows(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>>
     let toolbar_phys_h = (TOOLBAR_LOGICAL_HEIGHT * scale) as i32;
     let (default_toolbar_x, default_toolbar_y) = default_toolbar_position(work_area, scale);
 
-    let saved = load_toolbar_position(&app.handle())
-        .map(|pos| clamp_toolbar_position(pos, work_area, toolbar_phys_w, toolbar_phys_h));
+    // Clamp a saved position to the monitor it's on (not always the primary), so the
+    // toolbar stays where it was left on a second display
+    let monitors = app.available_monitors().unwrap_or_default();
+    let saved = load_toolbar_position(&app.handle()).map(|pos| {
+        let monitor = monitors.iter().find(|m| {
+            let area = m.work_area();
+            pos.x >= area.position.x
+                && pos.y >= area.position.y
+                && pos.x < area.position.x + area.size.width as i32
+                && pos.y < area.position.y + area.size.height as i32
+        });
+        match monitor {
+            Some(m) => {
+                let s = m.scale_factor();
+                let w = (TOOLBAR_LOGICAL_WIDTH_DEFAULT * s) as i32;
+                let h = (TOOLBAR_LOGICAL_HEIGHT * s) as i32;
+                clamp_toolbar_position(pos, m.work_area(), w, h)
+            }
+            None => clamp_toolbar_position(pos, work_area, toolbar_phys_w, toolbar_phys_h),
+        }
+    });
     let (toolbar_x, toolbar_y) = saved
         .map(|pos| (pos.x, pos.y))
         .unwrap_or((default_toolbar_x, default_toolbar_y));
@@ -664,9 +714,11 @@ fn clamp_toolbar_position(
     toolbar_h: i32,
 ) -> ToolbarPosition {
     let min_x = work_area.position.x;
-    let max_x = work_area.position.x + work_area.size.width as i32 - toolbar_w;
     let min_y = work_area.position.y;
-    let max_y = work_area.position.y + work_area.size.height as i32 - toolbar_h;
+    // A toolbar wider/taller than the work area pins to its left/top edge
+    // (`clamp` panics when max < min)
+    let max_x = (work_area.position.x + work_area.size.width as i32 - toolbar_w).max(min_x);
+    let max_y = (work_area.position.y + work_area.size.height as i32 - toolbar_h).max(min_y);
 
     ToolbarPosition {
         x: pos.x.clamp(min_x, max_x),
@@ -742,46 +794,13 @@ fn start_cursor_polling(app: AppHandle, mut overlays: Vec<OverlayWindowInfo>) {
         let mut left_was_down = false;
 
         loop {
-            // Dynamically check for new monitors every 2 seconds
+            // Every 2 s, follow the displays: new monitors get an overlay, resized or
+            // rescaled ones get their overlay refitted, disconnected ones lose theirs
             if last_monitor_check.elapsed() > Duration::from_secs(2) {
                 last_monitor_check = std::time::Instant::now();
                 if let Ok(monitors) = app_handle.available_monitors() {
-                    let current_keys: std::collections::HashSet<_> = overlays.iter()
-                        .map(|o| (o.monitor_x, o.monitor_y))
-                        .collect();
-                    
-                    let mut created_any = false;
-                    for monitor in monitors {
-                        let key = (monitor.position().x, monitor.position().y);
-                        if !current_keys.contains(&key) {
-                            let label = format!("overlay-dyn-{}", next_overlay_id);
-                            next_overlay_id += 1;
-                            
-                            if let Ok(overlay) = WebviewWindowBuilder::new(&app_handle, &label, WebviewUrl::App("index.html".into()))
-                                .title("Mira Overlay")
-                                .decorations(false)
-                                .transparent(true)
-                                .always_on_top(true)
-                                .accept_first_mouse(true)
-                                .resizable(false)
-                                .skip_taskbar(true)
-                                .shadow(false)
-                                .visible(false)
-                                .build() 
-                            {
-                                let _ = configure_overlay_for_monitor(&overlay, &monitor);
-                                overlays.push(OverlayWindowInfo {
-                                    label,
-                                    monitor_x: monitor.position().x,
-                                    monitor_y: monitor.position().y,
-                                    scale: monitor.scale_factor(),
-                                });
-                                last.push((f64::MIN, f64::MIN));
-                                created_any = true;
-                            }
-                        }
-                    }
-                    if created_any {
+                    if sync_overlays_with_monitors(&app_handle, &monitors, &mut overlays, &mut next_overlay_id) {
+                        last = vec![(f64::MIN, f64::MIN); overlays.len()];
                         raise_toolbar(&app_handle);
                     }
                 }
@@ -824,7 +843,88 @@ fn start_cursor_polling(app: AppHandle, mut overlays: Vec<OverlayWindowInfo>) {
     });
 }
 
-fn configure_overlay_for_monitor(
+/// Bring the overlay list in line with the connected monitors. Returns true when
+/// anything changed. Overlays are matched by origin: a monitor that keeps its
+/// origin but changes size or scale keeps its overlay (and its drawings), refitted.
+fn sync_overlays_with_monitors(
+    app: &AppHandle,
+    monitors: &[tauri::Monitor],
+    overlays: &mut Vec<OverlayWindowInfo>,
+    next_overlay_id: &mut usize,
+) -> bool {
+    // An empty list is a display reconfiguration in progress, not "no monitors"
+    if monitors.is_empty() {
+        return false;
+    }
+    let mut changed = false;
+
+    // Refit or drop existing overlays
+    overlays.retain_mut(|info| {
+        if monitors.iter().any(|m| info.matches(m)) {
+            info.missing_checks = 0;
+            return true;
+        }
+        let same_origin = monitors
+            .iter()
+            .find(|m| m.position().x == info.monitor_x && m.position().y == info.monitor_y);
+        let window = app.get_webview_window(&info.label);
+        match (same_origin, window) {
+            (Some(monitor), Some(window)) => {
+                changed = true;
+                let _ = fit_overlay_to_monitor(&window, monitor);
+                *info = OverlayWindowInfo::for_monitor(info.label.clone(), monitor);
+                true
+            }
+            // Wait for a second check before dropping it (and its drawings), in case
+            // the display list was caught mid-reconfiguration
+            (None, Some(_)) if info.missing_checks == 0 => {
+                info.missing_checks += 1;
+                true
+            }
+            (None, Some(window)) => {
+                changed = true;
+                // Monitor unplugged: macOS would move the window onto another display,
+                // where it would sit on top of that display's own overlay
+                let _ = window.destroy();
+                // Others drop its undo/redo times, or global undo would wait on it forever
+                let _ = app.emit("overlay-removed", serde_json::json!({ "label": info.label }));
+                false
+            }
+            (_, None) => {
+                changed = true;
+                false
+            }
+        }
+    });
+
+    // New monitors
+    for monitor in monitors {
+        if overlays.iter().any(|o| o.matches(monitor)) {
+            continue;
+        }
+        let label = format!("overlay-dyn-{}", *next_overlay_id);
+        *next_overlay_id += 1;
+        let built = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
+            .title("Mira Overlay")
+            .decorations(false)
+            .transparent(true)
+            .always_on_top(true)
+            .accept_first_mouse(true)
+            .resizable(false)
+            .skip_taskbar(true)
+            .shadow(false)
+            .visible(false)
+            .build();
+        if let Ok(overlay) = built {
+            let _ = configure_overlay_for_monitor(&overlay, monitor);
+            overlays.push(OverlayWindowInfo::for_monitor(label, monitor));
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn fit_overlay_to_monitor(
     overlay: &WebviewWindow,
     monitor: &tauri::Monitor,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -838,8 +938,24 @@ fn configure_overlay_for_monitor(
         x: mon_pos.x,
         y: mon_pos.y,
     }))?;
-    overlay.set_ignore_cursor_events(true)?; // start in pass-through
-    overlay.show()?;
+    Ok(())
+}
+
+fn configure_overlay_for_monitor(
+    overlay: &WebviewWindow,
+    monitor: &tauri::Monitor,
+) -> Result<(), Box<dyn std::error::Error>> {
+    fit_overlay_to_monitor(overlay, monitor)?;
+    // Match the other overlays: click-through unless draw mode / ⌥ quick draw is on,
+    // hidden if the user hid the overlay
+    let app = overlay.app_handle();
+    let presenter = app.state::<PresenterState>();
+    let pass_through = presenter.draw_passthrough.load(Ordering::SeqCst)
+        && !presenter.quick_draw_active.load(Ordering::SeqCst);
+    overlay.set_ignore_cursor_events(pass_through)?;
+    if app.state::<OverlayState>().visible.load(Ordering::SeqCst) {
+        overlay.show()?;
+    }
     Ok(())
 }
 
