@@ -28,6 +28,7 @@ During live calls, standups and demos, switching tools breaks your flow. Mira ke
 - A highlighter that behaves like a real marker: yellow by default, even color where strokes overlap, sits under your pen ink, hold `⇧` for a straight line
 - `⇧` also snaps lines/arrows to 45° and makes perfect squares/circles
 - Undo, redo and clear (all undoable)
+- **One-key shortcuts while drawing**: numbers for colors, letters for tools, `[` `]` for size — hold a tool key while dragging to use it just for that stroke. Press `?` for the cheat sheet
 
 **Present**
 - **Presenter mode**: navigate your apps normally and **hold `⌥ Option` to draw** — release and you're back to clicking. Marks fade on their own, a soft halo keeps the cursor easy to follow, and click highlights (menu bar → Highlight Clicks) show the audience where you clicked. Ideal for tutorials and live walkthroughs.
@@ -43,6 +44,8 @@ During live calls, standups and demos, switching tools breaks your flow. Mira ke
 
 ## Keyboard shortcuts
 
+### Anywhere
+
 | Shortcut | Action |
 |---|---|
 | `⌃⇧P` | Presenter mode — then **hold `⌥`** to draw, release to navigate |
@@ -55,6 +58,20 @@ During live calls, standups and demos, switching tools breaks your flow. Mira ke
 | `⌃⇧C` | Clear |
 | `⌃⇧X` | Show/hide the overlay |
 | `⌃⇧H` | Show/hide the toolbar |
+
+### While drawing
+
+| Key | Action |
+|---|---|
+| `1`–`6` | Color (`⇧1`–`⇧6`: highlighter in that color) |
+| `P` `H` `E` | Pen, highlighter, eraser |
+| `L` `A` `R` `O` `T` | Line, arrow, rectangle, ellipse, text |
+| Hold `L` `A` `R` `O` `E` | Use that tool while dragging, release to go back |
+| `[` `]` (or `-` `+`) | Thinner / thicker |
+| `⇧` while dragging | Straight line, 45° snap, square or circle |
+| `⌘Z` / `⌘⇧Z` | Undo / Redo |
+| `⌫` | Clear all |
+| `?` | Show all shortcuts |
 | `Esc` | Leave draw mode |
 
 ## Install & run
@@ -77,6 +94,10 @@ Grant these in **System Settings → Privacy & Security** (in development, grant
 - **Accessibility** — needed for the global shortcuts.
 - **Screen Recording** — needed for zoom. If the zoomed view shows only your wallpaper, this permission is missing.
 
+### Privacy
+
+Mira works entirely on your Mac. It has no network code, no analytics and no account. The screen capture used by zoom stays in memory only while zoom is open, and your drawings are never saved to disk.
+
 ### Using it in video calls
 
 Annotations reach Meet, Zoom or Teams only when you share your **entire screen**. Sharing a single window doesn't include Mira's overlay.
@@ -98,15 +119,15 @@ flowchart LR
   O --> U
 ```
 
-The [architecture notes in `CLAUDE.md`](CLAUDE.md) describe the event contract in detail. The roadmap and known gaps are in [`NEXT_STEPS.md`](NEXT_STEPS.md).
+The [architecture notes in `CLAUDE.md`](CLAUDE.md) describe the event contract in detail. Known gaps and ideas are in [`ROADMAP.md`](ROADMAP.md), and what changed in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Contributing
 
-Contributions are welcome. Keep changes focused, and include a screenshot or GIF for UI changes. Before opening a PR, run:
+Contributions are welcome! Read [`CONTRIBUTING.md`](CONTRIBUTING.md) for how to set up, check and submit a change. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md), and report security issues privately as described in [`SECURITY.md`](SECURITY.md).
 
-```bash
-bun run build     # TypeScript typecheck + frontend build
-```
+## License
+
+[MIT](LICENSE) © Pedro Santos
 
 ## About
 
